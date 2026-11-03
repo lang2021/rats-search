@@ -344,7 +344,7 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
 
     // Translations endpoint: /api/translations/<lang>
     if (req.path.startsWith("/api/translations/")) {
-        const QString lang = req.path.mid(19);
+        const QString lang = req.path.mid(QStringLiteral("/api/translations/").size());
         socket->write(handleTranslations(lang));
         socket->disconnectFromHost();
         return;

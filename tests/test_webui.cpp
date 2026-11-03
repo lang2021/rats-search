@@ -37,6 +37,7 @@ private slots:
     void testMissingWebuiDir();
     void testSymlinkCannotEscapeWebui();
     void testVendoredScriptRoute();
+    void testChineseTranslations();
 
 private:
     std::unique_ptr<rats::rest::ApiServer> server;
@@ -208,6 +209,13 @@ void TestWebUI::testVendoredScriptRoute()
     const HttpResponse resp = httpGet("/vendor/vue.global.prod.js");
     QCOMPARE(resp.statusCode, 200);
     QCOMPARE(resp.body, QByteArray("window.Vue = {};"));
+}
+
+void TestWebUI::testChineseTranslations()
+{
+    const HttpResponse resp = httpGet("/api/translations/zh");
+    QCOMPARE(resp.statusCode, 200);
+    QVERIFY(resp.body.contains("language=\"zh_CN\""));
 }
 
 QTEST_MAIN(TestWebUI)

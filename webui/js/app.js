@@ -116,6 +116,7 @@ const app = createApp({
     data() {
         return {
             locale: localStorage.getItem('locale') || 'en',
+            localeDict: I18N[localStorage.getItem('locale') || 'en'] || I18N['en'],
             searchQuery: '',
             lastQuery: '',
             searching: false,
@@ -213,7 +214,7 @@ const app = createApp({
             return this.sortSource === 'favorites' ? this.applySorting(this.favorites) : this.favorites;
         },
         currentDict() {
-            return I18N[this.locale] || I18N['en'] || {};
+            return this.localeDict;
         }
     },
 
@@ -239,6 +240,7 @@ const app = createApp({
             localStorage.setItem('locale', lang);
             if (lang === 'en') {
                 I18N['en'] = { ...EN_WEBUI };
+                this.localeDict = I18N['en'];
                 return;
             }
             try {
@@ -254,9 +256,13 @@ const app = createApp({
                             dict[src] = trans.textContent;
                     }
                     I18N[lang] = { ...EN_WEBUI, ...dict };
+                    if (this.locale === lang) this.localeDict = I18N[lang];
+                } else if (this.locale === lang) {
+                    this.localeDict = { ...EN_WEBUI };
                 }
             } catch (e) {
                 I18N[lang] = { ...EN_WEBUI };
+                if (this.locale === lang) this.localeDict = I18N[lang];
             }
         },
 
