@@ -216,12 +216,23 @@ We welcome all contributions: bug fixes, improvements, code refactoring, and oth
 
 ## Docker
 
-Run Rats Search in a container (console mode, no GUI):
+Run Rats Search in a container with the Web console:
 
 ```bash
+git submodule update --init --recursive
 docker build -t rats-search .
-docker run -d -p 8095:8095 -v rats-data:/data rats-search
+docker run -d -p 8095:8095 -p 8096:8096 -p 4444:4444/tcp -p 6881:6881/udp \
+  -v rats-data:/data rats-search
 ```
+
+Open `http://localhost:8095/` for search, feed, downloads, settings and P2P status.
+`http://localhost:8095/metrics` exposes Prometheus metrics. The image selects
+the bundled Manticore binaries for Linux amd64 or arm64 at build time.
+
+To run Prometheus and Grafana as well, set `GRAFANA_ADMIN_PASSWORD` and use
+`docker compose -f docker-compose.example.yml up --build -d`. Grafana is then
+available at port 3000. Keep the HTTP and WebSocket ports on a trusted network:
+the upstream API does not authenticate requests.
 
 The default command starts the spider with 30 max P2P peers. Override as needed:
 
@@ -230,13 +241,21 @@ docker run -d \
   -p 8095:8095 \
   -v rats-data:/data \
   rats-search \
-  /app/RatsSearch --console --spider --max-peers 100 --data-dir /data
+  /app/RatsSearch --console --spider --max-peers 100 --data-dir /data \
+  --webui-dir /app/webui
 ```
 
 | Port / Volume | Description |
 |---------------|-------------|
-| `8095` | HTTP REST API (enable `restApi` in `/data/rats.json`) |
+| `8095` | Web console, HTTP REST API, and Prometheus metrics |
+| `8096` | WebSocket event stream |
+| `4444/tcp` | P2P listener (default) |
+| `6881/udp` | DHT listener (default) |
 | `/data` | Persistent storage for database, config, and logs |
+
+The Web console integration is based on [PR #278](https://github.com/librats/rats-search/pull/278)
+by vlad-lukyanov. The bundled Vue runtime retains its MIT license in
+`webui/vendor/LICENSE.vue`.
 
 ---
 
