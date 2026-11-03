@@ -4,6 +4,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QHostAddress>
+#include <QTcpServer>
 #include "rest/api_server.h"
 #include "rest/api_router.h"
 
@@ -29,7 +31,11 @@ private:
 void TestMetricsEndpoint::initTestCase()
 {
     server = std::make_unique<rats::rest::ApiServer>(nullptr);
-    QVERIFY(server->start(18097));
+    QTcpServer probe;
+    QVERIFY(probe.listen(QHostAddress::LocalHost, 0));
+    const int freePort = probe.serverPort();
+    probe.close();
+    QVERIFY(server->start(freePort, 0));
     port = server->httpPort();
     QVERIFY(port > 0);
 }

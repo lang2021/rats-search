@@ -2,10 +2,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHostAddress>
 #include <QTemporaryDir>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QSignalSpy>
+#include <QTcpServer>
 #include "rest/api_server.h"
 #include "rest/api_router.h"
 
@@ -70,7 +72,11 @@ void TestWebUI::initTestCase()
 
     server = std::make_unique<rats::rest::ApiServer>(nullptr);
     server->setWebuiDir(tempDir.path() + "/webui");
-    QVERIFY(server->start(18095));
+    QTcpServer probe;
+    QVERIFY(probe.listen(QHostAddress::LocalHost, 0));
+    const int freePort = probe.serverPort();
+    probe.close();
+    QVERIFY(server->start(freePort, 0));
     port = server->httpPort();
     QVERIFY(port > 0);
 }

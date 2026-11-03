@@ -1,15 +1,30 @@
 const { createApp } = Vue;
 
 const EN_WEBUI = {
+    'activity.pause': 'Pause',
+    'activity.resume': 'Resume',
     'activity.waiting': 'Waiting for new torrents...',
     'context.addToFav': 'Add to Favorites',
+    'context.copyHash': 'Copy Info Hash',
+    'context.copyMagnet': 'Copy Magnet Link',
+    'context.details': 'Details',
     'context.export': 'Export .torrent',
+    'context.openMagnet': 'Open Magnet Link',
+    'context.removeFav': 'Remove from Favorites',
+    'details.completed': 'Completed',
     'details.copy': 'Copy',
+    'details.download': 'Download',
     'details.export': 'Export .torrent',
     'details.favorite': 'Favorite',
     'details.favorited': 'Favorited',
     'details.files': 'Files',
+    'details.leechers': 'Leechers',
+    'details.seeders': 'Seeders',
+    'details.size': 'Size',
+    'downloads.cancel': 'Cancel',
     'downloads.noActive': 'No active downloads',
+    'downloads.pause': 'Pause',
+    'downloads.resume': 'Resume',
     'favorites.empty': 'No favorites yet. Click the star icon on a torrent to add it.',
     'footer.dhtNodes': 'DHT Nodes',
     'footer.files': 'Files',
@@ -17,38 +32,76 @@ const EN_WEBUI = {
     'footer.totalSize': 'Total Size',
     'footer.torrents': 'Torrents',
     'search.noResults': 'No torrents found for',
+    'search.btn': 'Search',
+    'search.results': 'Search Results',
     'search.searching': 'Searching...',
     'settings.adultFilter': 'Adult content filter',
+    'settings.appearance': 'Appearance',
     'settings.autoCleanup': 'Auto cleanup old torrents',
     'settings.closeToTray': 'Close to tray',
+    'settings.checkTorrents': 'Check Torrents',
+    'settings.checkUpdates': 'Check for updates on startup',
+    'settings.cleanTorrents': 'Clean Torrents',
+    'settings.cleaningTorrents': 'Cleaning torrents...',
+    'settings.cleanupGroup': 'Torrent Cleanup',
+    'settings.contentTypeFilter': 'Content Type Filter',
+    'settings.contentTypeHint': 'Select which content types to index.',
+    'settings.darkMode': 'Dark mode',
+    'settings.dataDir': 'Data Directory',
+    'settings.dataDirPath': 'Data directory path',
+    'settings.defaultDir': 'Default download directory',
+    'settings.dhtIndexer': 'DHT Indexer',
+    'settings.dhtPort': 'DHT port',
+    'settings.downloadHint': 'Files downloaded by this server are saved here.',
+    'settings.downloads': 'Downloads',
     'settings.enableP2p': 'Enable P2P',
+    'settings.enableIndexer': 'Enable DHT indexer',
+    'settings.enableRestApi': 'Enable REST API',
+    'settings.enableTrackers': 'Enable trackers',
     'settings.enableQuota': 'Enable disk space quota',
     'settings.filters': 'Filters',
     'settings.general': 'General',
+    'settings.httpPort': 'HTTP port',
     'settings.indexer': 'Indexer',
+    'settings.language': 'Language',
+    'settings.maxConnections': 'Maximum connections',
+    'settings.maxFiles': 'Maximum files',
     'settings.maxSize': 'Max size (MB):',
     'settings.minSize': 'Min size (MB):',
+    'settings.minimizeToTray': 'Minimize to tray',
+    'settings.nameFilters': 'Name Filters',
     'settings.network': 'Network',
     'settings.nodesUsage': 'DHT nodes usage:',
     'settings.negativeRegex': 'Negative regex (reject matches)',
     'settings.packageLimit': 'Package limit:',
     'settings.p2pReplication': 'P2P replication (client)',
     'settings.p2pReplicationServer': 'P2P replication server',
+    'settings.p2pNetwork': 'P2P Network',
+    'settings.p2pPort': 'P2P port',
+    'settings.ports': 'Ports',
+    'settings.portsHint': 'Port changes require a restart.',
     'settings.regex': 'Regex:',
+    'settings.regexPlaceholder': 'Enter a regular expression',
+    'settings.restApi': 'REST API',
     'settings.recheckFiles': 'Recheck files on adding',
     'settings.saveBtn': 'Save Settings',
+    'settings.spiderPerf': 'Spider Performance',
+    'settings.startMinimized': 'Start minimized',
     'settings.sizeLimits': 'Size & File Limits',
     'settings.spaceQuota': 'Space Quota',
     'settings.startup': 'Startup & System',
     'settings.storage': 'Storage',
+    'settings.updates': 'Updates',
     'tabs.activity': 'Activity',
     'tabs.favorites': 'Favorites',
     'tabs.feed': 'Feed',
     'tabs.top': 'Top',
     'toast.addedFav': 'Added to favorites',
+    'toast.downloadCancelled': 'Download cancelled',
     'toast.downloadStarted': 'Download started',
     'toast.exported': 'Torrent exported',
     'toast.imported': 'imported',
+    'toast.removedFav': 'Removed from favorites',
     'toast.settingsSaved': 'Settings saved',
     'toast.voteBad': 'Voted bad',
     'toast.voteGood': 'Voted good',
@@ -117,6 +170,7 @@ const app = createApp({
         }
 
         setInterval(() => {
+            this.loadStats();
             this.loadP2PStatus();
             if (this.activeTab === 'downloads') {
                 this.loadDownloads();
@@ -166,7 +220,8 @@ const app = createApp({
     methods: {
         t(key) {
             const dict = this.currentDict;
-            return dict[key] || key;
+            const english = EN_WEBUI[key] || key;
+            return dict[english] || dict[key] || english;
         },
 
         toggleTheme() {
@@ -488,9 +543,7 @@ const app = createApp({
 
                 if (data.success && data.data) {
                     this.selectedTorrent = data.data;
-                    if (data.data.filesList) {
-                        this.torrentFiles = data.data.filesList;
-                    }
+                    this.torrentFiles = data.data.files_list || [];
                 }
             } catch (error) {
                 console.error('Details error:', error);
@@ -890,6 +943,7 @@ const app = createApp({
                         const eventName = msg.event || msg.method;
                         if (eventName === 'torrentIndexed' && msg.data) {
                             this.onTorrentIndexed(msg.data);
+                            this.loadStats();
                         }
                         if (eventName === 'downloadProgress' && msg.data) {
                             this.onDownloadProgress(msg.data);
