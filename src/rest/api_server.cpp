@@ -355,7 +355,8 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
         req.path.startsWith("/images/") || req.path.startsWith("/vendor/") ||
         req.path.endsWith(".html") || req.path.endsWith(".css") ||
         req.path.endsWith(".js") || req.path.endsWith(".json") || req.path.endsWith(".svg") ||
-        req.path.endsWith(".ico") || req.path.endsWith(".png") || req.path.endsWith(".jpg")) {
+        req.path.endsWith(".ico") || req.path.endsWith(".png") || req.path.endsWith(".jpg") ||
+        req.path.endsWith(".woff") || req.path.endsWith(".woff2")) {
         socket->write(handleStaticFile(req.path));
         socket->disconnectFromHost();
         return;
@@ -882,6 +883,10 @@ QByteArray ApiServer::handleStaticFile(const QString& path) const
         contentType = "image/svg+xml";
     else if (filePath.endsWith(".ico"))
         contentType = "image/x-icon";
+    else if (filePath.endsWith(".woff2"))
+        contentType = "font/woff2";
+    else if (filePath.endsWith(".woff"))
+        contentType = "font/woff";
 
     return buildHttpResponse(200, "OK", content, contentType);
 }
