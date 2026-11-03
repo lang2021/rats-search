@@ -53,7 +53,7 @@ function content(t: RatsTorrent) {
       updatedAt: timestamp,
     },
     content: null,
-    languages: [],
+    languages: null,
     episodes: null,
     video3d: null,
     videoCodec: null,
