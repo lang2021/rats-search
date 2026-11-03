@@ -21,6 +21,10 @@ using domain::Torrent;
 namespace {
 const QString kTorrents = QStringLiteral("torrents");
 const QString kFiles = QStringLiteral("files");
+const QString kListColumns = QStringLiteral(
+    "id, hash, name, size, files, piecelength, added, ipv4, port, "
+    "contentType, contentCategory, seeders, leechers, completed, "
+    "trackersChecked, good, bad");
 constexpr int kInfoNameMaxLength = 800;
 
 // Split the "\n"-joined path/size blobs stored in the files table back into a
@@ -406,6 +410,9 @@ QVector<SearchHit> TorrentRepository::searchTorrents(const SearchQuery& q)
         return hits;
 
     SelectQuery builder(kTorrents);
+    // Exclude the large 'info' JSON column from search results — it blows up
+    // the MySQL wire protocol buffer on large result sets.
+    builder.columns(kListColumns);
 
     static const QRegularExpression hexRe(QStringLiteral("^[0-9a-fA-F]{40}$"));
     const bool byHash = hexRe.match(q.text).hasMatch();
@@ -470,6 +477,7 @@ QVector<SearchHit> TorrentRepository::searchFiles(const SearchQuery& q)
     QHash<qint64, QStringList> wantedParents;
     const QVector<qint64> parentIds = idsFor(orderedHashes, wantedParents);
     SelectQuery parents(kTorrents);
+    parents.columns(kListColumns);
     parents.whereInIds(QStringLiteral("id"), parentIds);
     parents.whereRaw(contentTypeFilter(q.contentType));
     applyRangeFilters(parents, q);
@@ -505,12 +513,15 @@ QVector<SearchHit> TorrentRepository::searchFiles(const SearchQuery& q)
 
 QVector<Torrent> TorrentRepository::recent(int limit)
 {
-    return selectTorrents(QStringLiteral("SELECT * FROM torrents ORDER BY added DESC LIMIT 0,%1").arg(limit));
+    return selectTorrents(QStringLiteral("SELECT %1 FROM torrents ORDER BY added DESC LIMIT 0,%2")
+                              .arg(kListColumns)
+                              .arg(limit));
 }
 
 QVector<Torrent> TorrentRepository::top(const QString& type, const QString& time, int offset, int limit)
 {
     SelectQuery builder(kTorrents);
+    builder.columns(kListColumns);
     builder.whereRaw(QStringLiteral("seeders > 0"));
     builder.whereRaw(QStringLiteral("contentCategory != %1").arg(domain::toId(ContentCategory::XXX)));
     builder.whereRaw(contentTypeFilter(type));
