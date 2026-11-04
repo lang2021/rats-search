@@ -44,6 +44,8 @@ using namespace rats;
 struct Application::Private {
     Application::Options options;
     bool running = false;
+    bool downloadSessionLoaded = false;
+    QString networkError;
 
     // Adapters (owned, constructed in dependency order)
     std::unique_ptr<ConfigStore> config;
@@ -163,17 +165,18 @@ Application::~Application()
 void Application::applyConfig()
 {
     ConfigStore* c = d_->config.get();
+    const bool network = c->networkEnabled() && d_->transport->isRunning();
 
     d_->filter->setSettings(c->filterSettings());
 
     d_->downloads->setDefaultDownloadPath(c->downloadPath());
-    d_->trackers->setCountScrapingEnabled(c->trackersEnabled());
-    d_->trackers->setInfoScrapingEnabled(c->trackersEnabled());
-    d_->replication->setEnabled(c->p2pReplication());
+    d_->trackers->setCountScrapingEnabled(network && c->trackersEnabled());
+    d_->trackers->setInfoScrapingEnabled(network && c->trackersEnabled());
+    d_->replication->setEnabled(network && c->indexExchangeEnabled() && c->p2pReplication());
     // One value drives both: what we actually do when asked, and what we tell
     // peers we would do. They must not disagree, or peers offer us to users who
     // will only ever get a refusal.
-    const bool shareDatabase = d_->options.shareDatabase.value_or(c->databaseSharing());
+    const bool shareDatabase = network && d_->options.shareDatabase.value_or(c->databaseSharing());
     d_->databaseSync->setSharingEnabled(shareDatabase);
     d_->peers->setDatabaseSharing(shareDatabase);
     {
@@ -183,6 +186,7 @@ void Application::applyConfig()
         d_->databaseSync->setSnapshotPolicy(policy);
     }
     d_->transport->setPortMappingEnabled(c->upnpEnabled());
+    d_->transport->setMdnsEnabled(c->mdnsEnabled());
     d_->transport->setHolePunchEnabled(c->holePunchEnabled());
     d_->transport->setRelayEnabled(c->relayEnabled());
     d_->transport->setRelayServeEnabled(c->relayServeEnabled());
@@ -191,18 +195,24 @@ void Application::applyConfig()
     // the current file immediately instead of at the next launch.
     common::applyLogSizeBudget(c->logMaxSizeMb());
     d_->searchHistory->setEnabled(c->searchHistoryEnabled());
+    d_->updates->setNetworkAllowed(network);
+
+    if (d_->running && !c->networkEnabled() && d_->transport->isRunning()) {
+        stopNetwork();
+        return;
+    }
 
     // Reflect runtime toggles of the crawler and replication. Only act once the
     // subsystems are up (applyConfig also runs at construction, before start(),
     // where start() itself does the initial launch). start()/stop() are
     // idempotent.
-    if (d_->running) {
+    if (d_->running && network) {
         if (c->indexerEnabled() || d_->options.forceSpider)
             d_->crawler->start();
         else
             d_->crawler->stop();
 
-        if (c->p2pReplication())
+        if (c->indexExchangeEnabled() && c->p2pReplication())
             d_->replication->start();
         else
             d_->replication->stop();
@@ -266,15 +276,25 @@ bool Application::start()
     }
 
     d_->feed->load();
-    d_->transport->start();
-
-    if (d_->config->indexerEnabled() || d_->options.forceSpider)
-        d_->crawler->start();
-    if (d_->config->p2pReplication())
-        d_->replication->start();
-
-    // Restore any in-progress downloads.
-    d_->downloads->loadSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
+    if (d_->config->networkEnabled()) {
+        if (d_->transport->start()) {
+            applyConfig();
+            d_->downloads->enableMonitoring();
+            if (d_->config->indexerEnabled() || d_->options.forceSpider)
+                d_->crawler->start();
+            if (d_->config->indexExchangeEnabled() && d_->config->p2pReplication())
+                d_->replication->start();
+            // Session restore resumes downloads and completed torrents (seeding).
+            // It requires its own explicit opt-in, separate from the network gate.
+            if (d_->config->resumeBtSession()) {
+                d_->downloads->loadSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
+                d_->downloadSessionLoaded = true;
+            }
+        } else {
+            d_->networkError = QStringLiteral("P2P transport failed to start");
+            qWarning() << "[Application]" << d_->networkError;
+        }
+    }
 
     // Background (resumable) migrations.
     d_->migrations->startAsyncMigrations();
@@ -316,7 +336,8 @@ void Application::stop()
     // announces / HTTP requests are drained rather than left blocking teardown.
     d_->crawler->stop();
     d_->trackers->stop();
-    d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
+    if (d_->downloadSessionLoaded)
+        d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
     d_->feed->save();
     d_->replication->stop();
     // The sync worker reads/writes the database on its own thread; it has to be
@@ -326,6 +347,45 @@ void Application::stop()
     d_->manticore->stop();
 
     d_->running = false;
+}
+
+void Application::stopNetwork()
+{
+    d_->crawler->stop();
+    d_->trackers->stop();
+    d_->replication->stop();
+    d_->databaseSync->setSharingEnabled(false);
+    d_->peers->setDatabaseSharing(false);
+    if (d_->databaseSync->status().operation == service::DatabaseSyncService::Operation::PeerPull)
+        d_->databaseSync->cancel();
+    if (d_->downloadSessionLoaded) {
+        d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
+        d_->downloadSessionLoaded = false;
+    }
+    d_->downloads->suspendForNetworkStop();
+    d_->transport->stop();
+    qInfo() << "[Application] network features stopped; local search remains available";
+}
+
+QJsonObject Application::featureStatus() const
+{
+    const bool actual = d_->transport->isRunning();
+    return QJsonObject {
+        { "networkDesired", d_->config->networkEnabled() },
+        { "networkRunning", actual },
+        { "restartRequired", d_->running && d_->config->networkEnabled() && !actual },
+        { "dhtRunning", d_->transport->isDhtRunning() },
+        { "mdnsRunning", d_->transport->isMdnsRunning() },
+        { "p2pRunning", actual },
+        { "btEngineReady", d_->engine->isReady() },
+        { "crawlerRunning", d_->crawler->isRunning() },
+        { "replicationRunning", d_->replication->isRunning() },
+        { "databaseSharingRunning", d_->databaseSync->sharingEnabled() },
+        { "indexExchangeAllowed", d_->config->indexExchangeEnabled() },
+        { "indexExchangeRunning", actual && d_->config->indexExchangeEnabled() },
+        { "peerCount", d_->transport->peerCount() },
+        { "lastError", d_->networkError },
+    };
 }
 
 const Application::Options& Application::options() const

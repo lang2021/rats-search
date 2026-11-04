@@ -49,6 +49,11 @@ void ReplicationService::stop()
     qInfo() << "[Replication] stopped, total replicated:" << totalReplicated_;
 }
 
+bool ReplicationService::isRunning() const
+{
+    return timer_->isActive();
+}
+
 void ReplicationService::performCycle()
 {
     if (!enabled_) {

@@ -27,6 +27,8 @@ private slots:
     void languageAndDarkMode_haveDedicatedSignals();
     void uiFont_defaultsAndClamping();
     void saveThenLoad_roundTrips();
+    void networkGate_defaultsOffAndPersists();
+    void legacyNetworkDefaultsAreNotConsent();
 
 private:
     QTemporaryDir* dir_ = nullptr;
@@ -58,6 +60,39 @@ void TestConfigStore::typedSetter_emitsConfigChanged()
     QCOMPARE(spy.count(), 1);
     QCOMPARE(spy.at(0).at(0).toStringList(), QStringList { "indexer" });
     QVERIFY(!config_->indexerEnabled());
+}
+
+void TestConfigStore::networkGate_defaultsOffAndPersists()
+{
+    QVERIFY(!config_->networkEnabled());
+    QVERIFY(!config_->resumeBtSession());
+    QVERIFY(!config_->mdnsEnabled());
+    QVERIFY(!config_->indexExchangeEnabled());
+    QVERIFY(!config_->databaseSharing());
+    config_->setNetworkEnabled(true);
+    QVERIFY(config_->save());
+    ConfigStore loaded(path_);
+    QVERIFY(loaded.load());
+    QVERIFY(loaded.networkEnabled());
+    QVERIFY(!loaded.resumeBtSession());
+    QVERIFY(!loaded.mdnsEnabled());
+    QVERIFY(!loaded.indexExchangeEnabled());
+}
+
+void TestConfigStore::legacyNetworkDefaultsAreNotConsent()
+{
+    QFile file(path_);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"({"databaseSharing":true,"p2pReplication":true,"upnp":true,"holePunch":true,"relay":true})");
+    file.close();
+    ConfigStore loaded(path_);
+    QVERIFY(loaded.load());
+    QVERIFY(!loaded.networkEnabled());
+    QVERIFY(!loaded.databaseSharing());
+    QVERIFY(!loaded.p2pReplication());
+    QVERIFY(!loaded.upnpEnabled());
+    QVERIFY(!loaded.holePunchEnabled());
+    QVERIFY(!loaded.relayEnabled());
 }
 
 void TestConfigStore::typedSetter_nestedKey_emitsConfigChanged()

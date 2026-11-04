@@ -845,9 +845,15 @@ void ApiRouter::registerMethods()
 
     add("config.set", [this](const QJsonObject& params, const ResultCallback& respond) {
         const QStringList changed = app_->config()->fromJson(params);
+        if (changed.contains(QStringLiteral("networkEnabled")))
+            app_->config()->save();
         QJsonObject result;
         result["changed"] = QJsonArray::fromStringList(changed);
         respond(Result::success(result));
+    });
+
+    add("features.status", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        respond(Result::success(app_->featureStatus()));
     });
 
     // -----------------------------------------------------------------------
@@ -898,6 +904,10 @@ void ApiRouter::registerMethods()
     // Trackers (fire-and-forget scrape; results flow back into the index)
     // -----------------------------------------------------------------------
     add("tracker.check", [this](const QJsonObject& params, const ResultCallback& respond) {
+        if (!app_->transport()->isRunning() || !app_->config()->trackersEnabled()) {
+            respond(Result::failure("Tracker scraping is disabled"));
+            return;
+        }
         const QString hash = infohash::normalize(params["hash"].toString());
         if (!infohash::isValid(hash)) {
             respond(Result::failure("Invalid hash"));

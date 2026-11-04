@@ -56,15 +56,16 @@ ConfigStore::~ConfigStore()
 void ConfigStore::setDefaults()
 {
     config_ = QJsonObject { // Network
-        { "httpPort", 8095 }, { "p2pPort", 4444 }, { "dhtPort", 6881 },
+        { "httpPort", 8095 }, { "p2pPort", 4444 }, { "dhtPort", 6881 }, { "networkEnabled", false },
+        { "resumeBtSession", false }, { "mdns", false }, { "indexExchange", false },
 
         // P2P
-        { "p2pConnections", 10 }, { "p2pReplication", true }, { "p2pReplicationServer", true },
-        { "databaseSharing", true }, { "databaseSnapshotMaxAgeHours", 6 }, { "databaseSnapshotMaxDriftPercent", 10 },
+        { "p2pConnections", 10 }, { "p2pReplication", false }, { "p2pReplicationServer", true },
+        { "databaseSharing", false }, { "databaseSnapshotMaxAgeHours", 6 }, { "databaseSnapshotMaxDriftPercent", 10 },
 
         // Indexer
-        { "indexer", true }, { "trackers", true }, { "restApi", false }, { "upnp", true }, { "holePunch", true },
-        { "relay", true }, { "relayServe", false },
+        { "indexer", true }, { "trackers", true }, { "restApi", false }, { "upnp", false }, { "holePunch", false },
+        { "relay", false }, { "relayServe", false },
 
         // Spider
         { "spider", QJsonObject { { "walkInterval", 100 } } },
@@ -115,6 +116,16 @@ bool ConfigStore::load()
 
     // Merge loaded config with defaults
     QJsonObject loaded = doc.object();
+    // Legacy configs predate the master gate and their sharing/mapping values
+    // came from permissive defaults. Do not treat those defaults as consent when
+    // the user later opts into networking. Keep the other stored settings.
+    if (!loaded.contains("networkEnabled")) {
+        loaded["databaseSharing"] = false;
+        loaded["p2pReplication"] = false;
+        loaded["upnp"] = false;
+        loaded["holePunch"] = false;
+        loaded["relay"] = false;
+    }
     for (auto it = loaded.begin(); it != loaded.end(); ++it) {
         if (it.value().isObject() && config_.value(it.key()).isObject()) {
             // Merge nested objects
@@ -225,6 +236,39 @@ int ConfigStore::dhtPort() const
 void ConfigStore::setDhtPort(int port)
 {
     setValue("dhtPort", port);
+}
+
+bool ConfigStore::networkEnabled() const
+{
+    return config_["networkEnabled"].toBool(false);
+}
+void ConfigStore::setNetworkEnabled(bool enabled)
+{
+    setValue("networkEnabled", enabled);
+}
+bool ConfigStore::resumeBtSession() const
+{
+    return config_["resumeBtSession"].toBool(false);
+}
+void ConfigStore::setResumeBtSession(bool enabled)
+{
+    setValue("resumeBtSession", enabled);
+}
+bool ConfigStore::mdnsEnabled() const
+{
+    return config_["mdns"].toBool(false);
+}
+void ConfigStore::setMdnsEnabled(bool enabled)
+{
+    setValue("mdns", enabled);
+}
+bool ConfigStore::indexExchangeEnabled() const
+{
+    return config_["indexExchange"].toBool(false);
+}
+void ConfigStore::setIndexExchangeEnabled(bool enabled)
+{
+    setValue("indexExchange", enabled);
 }
 
 // ============================================================================

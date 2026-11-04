@@ -56,6 +56,7 @@ public:
 
     // Check for updates
     void checkForUpdates();
+    void setNetworkAllowed(bool allowed);
 
     // Download the update
     void downloadUpdate();
@@ -112,6 +113,7 @@ private:
 
     QNetworkAccessManager* networkManager_;
     QNetworkReply* currentReply_;
+    bool networkAllowed_ = false;
 
     QString repoOwner_;
     QString repoName_;

@@ -98,13 +98,14 @@ bool Crawler::start()
         // thread, so marshal it onto the Qt thread before touching our state.
         bt->set_spider_mode(true);
 
-        bt->set_spider_announce_callback([this](const librats::InfoHash& info_hash, const librats::Address& peer) {
+        const uint64_t generation = ++generation_;
+        bt->set_spider_announce_callback([this, generation](const librats::InfoHash& info_hash, const librats::Address& peer) {
             std::array<uint8_t, 20> infoHash = info_hash;
             std::string ip = peer.ip.to_string();
             uint16_t port = peer.port;
 
             QMetaObject::invokeMethod(
-                this, [this, infoHash, ip, port]() { onAnnounce(infoHash, ip, port); }, Qt::QueuedConnection);
+                this, [this, infoHash, ip, port, generation]() { onAnnounce(infoHash, ip, port, generation); }, Qt::QueuedConnection);
         });
 
         qInfo() << "Spider mode enabled with announce callback";
@@ -134,6 +135,8 @@ void Crawler::stop()
     }
 
     qInfo() << "Stopping DHT crawler...";
+    running_ = false;
+    ++generation_; // invalidate announces and metadata completions already queued
 
     walkTimer_->stop();
     ignoreTimer_->stop();
@@ -148,8 +151,6 @@ void Crawler::stop()
 #endif
 
     // Note: we never stop the BitTorrent subsystem here - the transport owns it.
-
-    running_ = false;
 
     emit statusChanged("Stopped");
 
@@ -224,8 +225,11 @@ void Crawler::processMetadataQueue()
     }
 }
 
-void Crawler::onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::string& ip, uint16_t port)
+void Crawler::onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::string& ip, uint16_t port,
+    uint64_t generation)
 {
+    if (!running_ || generation != generation_)
+        return;
     // Convert info-hash to a lower-case hex string.
     QString hashHex;
     for (uint8_t byte : infoHash) {
@@ -282,6 +286,7 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
     }
 
     activeFetches_++;
+    const uint64_t generation = generation_.load();
 
     const QString infoHash = request.infoHash;
     const QString peerIp = request.peerIp;
@@ -289,8 +294,10 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
 
     // librats manages the temporary torrent, the BEP 9 fetch and the timeout; it
     // invokes this callback exactly once (success or timeout) on a worker thread.
-    auto onResult = [this, infoHash, peerIp, peerPort](
+    auto onResult = [this, infoHash, peerIp, peerPort, generation](
                         const librats::bittorrent::TorrentInfo& torrentInfo, bool success, const std::string& err) {
+        if (!running_ || generation != generation_)
+            return;
         activeFetches_--;
 
         if (!success || !torrentInfo.is_valid()) {
@@ -303,7 +310,7 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
         // finished value onto the Qt thread.
         const domain::Torrent torrent = toDomainTorrent(infoHash, torrentInfo, peerIp, static_cast<int>(peerPort));
 
-        QMetaObject::invokeMethod(this, [this, torrent]() { onMetadataReceived(torrent); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(this, [this, torrent, generation]() { onMetadataReceived(torrent, generation); }, Qt::QueuedConnection);
     };
 
     if (!peerIp.isEmpty() && peerPort > 0) {
@@ -321,8 +328,10 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
 #endif
 }
 
-void Crawler::onMetadataReceived(const rats::domain::Torrent& torrent)
+void Crawler::onMetadataReceived(const rats::domain::Torrent& torrent, uint64_t generation)
 {
+    if (!running_ || generation != generation_)
+        return;
     discoveredCount_++;
     fetchSuccessCount_++;
     emit discovered(torrent);

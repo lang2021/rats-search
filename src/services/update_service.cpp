@@ -96,6 +96,18 @@ UpdateService::~UpdateService()
     }
 }
 
+void UpdateService::setNetworkAllowed(bool allowed)
+{
+    networkAllowed_ = allowed;
+    if (!allowed && currentReply_) {
+        disconnect(currentReply_, nullptr, this, nullptr);
+        currentReply_->abort();
+        currentReply_->deleteLater();
+        currentReply_ = nullptr;
+        setError(tr("Network features are disabled."));
+    }
+}
+
 QString UpdateService::currentVersion()
 {
     return RATSSEARCH_VERSION_STRING;
@@ -188,6 +200,10 @@ QString UpdateService::getPlatformAssetName() const
 
 void UpdateService::checkForUpdates()
 {
+    if (!networkAllowed_) {
+        setError(tr("Network features are disabled."));
+        return;
+    }
     if (state_ == UpdateState::CheckingForUpdates || state_ == UpdateState::Downloading) {
         qInfo() << "Update check already in progress";
         return;
@@ -314,6 +330,10 @@ void UpdateService::onCheckReplyFinished()
 
 void UpdateService::downloadUpdate()
 {
+    if (!networkAllowed_) {
+        setError(tr("Network features are disabled."));
+        return;
+    }
     if (!updateInfo_.isValid()) {
         setError(tr("No update available to download"));
         return;

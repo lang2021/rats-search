@@ -157,7 +157,10 @@ MainWindow::MainWindow(rats::app::Application* app, QWidget* parent)
 
     // Kick off a startup update check if enabled.
     if (config && config->checkUpdatesOnStartup() && app_->updates()) {
-        QTimer::singleShot(5000, this, [this]() { app_->updates()->checkForUpdates(); });
+        QTimer::singleShot(5000, this, [this]() {
+            if (app_->transport()->isRunning())
+                app_->updates()->checkForUpdates();
+        });
     }
 }
 
@@ -1084,7 +1087,7 @@ void MainWindow::performSearch(const QString& query)
     }
 
     // Ask connected peers as well; their answers stream back via peerApi signals.
-    if (app_->transport() && app_->transport()->isRunning() && query.length() > 2) {
+    if (app_->config()->indexExchangeEnabled() && app_->transport() && app_->transport()->isRunning() && query.length() > 2) {
         QJsonObject msg;
         msg["query"] = query;
         msg["text"] = query;

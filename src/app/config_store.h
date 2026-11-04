@@ -68,6 +68,17 @@ public:
     int dhtPort() const;
     void setDhtPort(int port);
 
+    // Master gate for all non-HTTP network subsystems. A new installation
+    // starts local-only; enabling it takes effect on the next application start.
+    bool networkEnabled() const;
+    void setNetworkEnabled(bool enabled);
+    bool resumeBtSession() const;
+    void setResumeBtSession(bool enabled);
+    bool mdnsEnabled() const;
+    void setMdnsEnabled(bool enabled);
+    bool indexExchangeEnabled() const;
+    void setIndexExchangeEnabled(bool enabled);
+
     // =========================================================================
     // P2P Settings
     // =========================================================================

@@ -114,6 +114,10 @@ public:
     // --- Session persistence (delegated to TorrentSessionStore) -------------
     bool saveSession(const QString& filePath);
     int loadSession(const QString& filePath);
+    void enableMonitoring();
+    // Called after saving when the transport is taken down. Prevent stale
+    // download rows and stop polling a detached BitTorrent subsystem.
+    void suspendForNetworkStop();
 
 signals:
     void downloadStarted(const QString& hash);

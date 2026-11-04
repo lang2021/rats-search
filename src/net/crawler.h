@@ -89,13 +89,14 @@ private:
     librats::Bittorrent* bittorrent() const;
 
     // announce_peer callback, already marshalled onto the Qt thread.
-    void onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::string& ip, uint16_t port);
+    void onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::string& ip, uint16_t port,
+        uint64_t generation);
 
     // Kick off a BEP 9 metadata fetch (fast path if peer is known, else DHT).
     void fetchMetadata(const MetadataRequest& request);
 
     // Handle a completed metadata fetch (runs on the Qt thread).
-    void onMetadataReceived(const rats::domain::Torrent& torrent);
+    void onMetadataReceived(const rats::domain::Torrent& torrent, uint64_t generation);
 
     // Tuning defaults — no magic numbers scattered through the logic.
     static constexpr int DEFAULT_WALK_INTERVAL_MS = 100;
@@ -107,6 +108,7 @@ private:
     P2PTransport* transport_; // borrowed, non-owning
 
     std::atomic<bool> running_;
+    std::atomic<uint64_t> generation_ { 0 };
     std::atomic<int> discoveredCount_;
     std::atomic<int> activeFetches_;
     std::atomic<int> fetchSuccessCount_;

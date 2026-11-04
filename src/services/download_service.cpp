@@ -63,8 +63,7 @@ DownloadService::DownloadService(net::TorrentEngine* engine, QObject* parent)
     updateTimer_ = new QTimer(this);
     updateTimer_->setInterval(1000); // poll once per second
     connect(updateTimer_, &QTimer::timeout, this, &DownloadService::onUpdateTimer);
-    // Safe to start now: the poll is a no-op until the engine is ready.
-    updateTimer_->start();
+    // Application starts polling only after the network gate opens.
 }
 
 DownloadService::~DownloadService()
@@ -594,6 +593,18 @@ int DownloadService::loadSession(const QString& filePath)
         qInfo() << "DownloadService: Restored" << restored << "torrents from session";
     }
     return restored;
+}
+
+void DownloadService::enableMonitoring()
+{
+    updateTimer_->start();
+}
+
+void DownloadService::suspendForNetworkStop()
+{
+    updateTimer_->stop();
+    QMutexLocker lock(&mutex_);
+    downloads_.clear();
 }
 
 // ============================================================================

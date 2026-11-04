@@ -44,7 +44,7 @@ private slots:
     void testErrorMessage_initiallyEmpty();
 
     // Signal / synchronous state transition
-    void testCheckForUpdates_changesStateSynchronously();
+    void testCheckForUpdates_blockedWithoutNetwork();
 
 private:
     UpdateService* service = nullptr;
@@ -168,22 +168,22 @@ void TestUpdateService::testErrorMessage_initiallyEmpty()
 // Signal / synchronous state transition
 // ============================================================================
 
-void TestUpdateService::testCheckForUpdates_changesStateSynchronously()
+void TestUpdateService::testCheckForUpdates_blockedWithoutNetwork()
 {
     QSignalSpy stateSpy(service, &UpdateService::stateChanged);
     QVERIFY(stateSpy.isValid());
 
-    // Triggers an async network request but flips state synchronously first.
+    // A local-only application must reject even an explicit update request
+    // before issuing a network request.
     service->checkForUpdates();
 
-    QCOMPARE(service->state(), UpdateService::UpdateState::CheckingForUpdates);
+    QCOMPARE(service->state(), UpdateService::UpdateState::Error);
     QVERIFY(stateSpy.count() >= 1);
 
     const QList<QVariant> firstChange = stateSpy.first();
     const auto firstState = firstChange.at(0).value<UpdateService::UpdateState>();
-    QCOMPARE(firstState, UpdateService::UpdateState::CheckingForUpdates);
-
-    // Do not wait for the async reply — avoids races during cleanup.
+    QCOMPARE(firstState, UpdateService::UpdateState::Error);
+    QVERIFY(service->errorMessage().contains("Network features are disabled"));
 }
 
 QTEST_MAIN(TestUpdateService)

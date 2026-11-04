@@ -53,6 +53,7 @@ signals:
     void remoteTorrentReceived(const QString& hash, const QJsonObject& data);
 
 private:
+    bool indexExchangeAllowed() const;
     // Register every transport handler and the peer-connected hook.
     void install();
 

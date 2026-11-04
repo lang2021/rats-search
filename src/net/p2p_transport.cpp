@@ -326,7 +326,8 @@ bool P2PTransport::start()
         }
 
         // Local-network discovery.
-        d_->mdns = d_->node->add_subsystem(std::make_unique<librats::MdnsDiscovery>());
+        if (mdnsEnabled_)
+            d_->mdns = d_->node->add_subsystem(std::make_unique<librats::MdnsDiscovery>());
 
         // Typed JSON messaging: the on()/send() surface used by the peer layer.
         d_->messages = d_->node->add_subsystem(std::make_unique<librats::MessageJson>());
@@ -529,6 +530,11 @@ void P2PTransport::setPortMappingEnabled(bool enabled)
     portMappingEnabled_ = enabled;
 }
 
+void P2PTransport::setMdnsEnabled(bool enabled)
+{
+    mdnsEnabled_ = enabled;
+}
+
 void P2PTransport::setHolePunchEnabled(bool enabled)
 {
     // Same deal as port mapping: a preference read when the subsystems are built.
@@ -585,6 +591,11 @@ size_t P2PTransport::dhtNodeCount() const
 bool P2PTransport::isDhtRunning() const
 {
     return d_->dht && d_->dht->is_running();
+}
+
+bool P2PTransport::isMdnsRunning() const
+{
+    return d_->mdns && d_->mdns->is_running();
 }
 
 // =========================================================================

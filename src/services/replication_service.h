@@ -25,6 +25,7 @@ public:
     void setEnabled(bool enabled); // config gate (p2pReplication)
     void start();
     void stop();
+    bool isRunning() const;
 
     // Called by the peer API each time a replicated torrent is inserted.
     void notifyReceived() { ++receivedThisCycle_; }

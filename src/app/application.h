@@ -2,6 +2,7 @@
 #define RATS_APP_APPLICATION_H
 
 #include <QObject>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <memory>
@@ -85,6 +86,7 @@ public:
     // subsystem (the database) fails. Idempotent.
     bool start();
     void stop();
+    QJsonObject featureStatus() const;
 
     const Options& options() const;
 
@@ -115,6 +117,7 @@ public:
 
 private:
     void applyConfig(); // push current config values into the services
+    void stopNetwork(); // immediate master-gate shutdown; re-enable needs restart
     void wireSignals(); // connect cross-service signals
 
     struct Private;

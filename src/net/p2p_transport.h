@@ -46,6 +46,7 @@ public:
     bool isRunning() const;
 
     void setPortMappingEnabled(bool enabled);
+    void setMdnsEnabled(bool enabled);
     void setHolePunchEnabled(bool enabled);
     // Reach peers through a third node when no punch can land, and (separately)
     // carry other peers' circuits — the latter spends our uplink, so it is opted
@@ -62,6 +63,7 @@ public:
     int carriedCircuitCount() const;
     size_t dhtNodeCount() const;
     bool isDhtRunning() const;
+    bool isMdnsRunning() const;
 
     // Messaging
     bool sendMessage(const QString& peerId, const QString& type, const QJsonObject& data);
@@ -132,6 +134,7 @@ private:
     // Preferences only; both subsystems are attached before start(), so a change
     // takes effect on the next (re)start.
     bool portMappingEnabled_ = true;
+    bool mdnsEnabled_ = false;
     bool holePunchEnabled_ = true;
     bool relayEnabled_ = true;
     bool relayServeEnabled_ = false;
