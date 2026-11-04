@@ -1087,7 +1087,7 @@ void MainWindow::performSearch(const QString& query)
     }
 
     // Ask connected peers as well; their answers stream back via peerApi signals.
-    if (app_->config()->indexExchangeEnabled() && app_->transport() && app_->transport()->isRunning() && query.length() > 2) {
+    if (app_->config()->remoteSearchEnabled() && app_->transport() && app_->transport()->isRunning() && query.length() > 2) {
         QJsonObject msg;
         msg["query"] = query;
         msg["text"] = query;

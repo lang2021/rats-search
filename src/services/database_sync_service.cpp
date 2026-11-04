@@ -301,6 +301,13 @@ void DatabaseSyncService::setSharingEnabled(bool enabled)
     }
 }
 
+void DatabaseSyncService::setPeerSyncEnabled(bool enabled)
+{
+    peerSyncEnabled_ = enabled;
+    if (!enabled && status().operation == Operation::PeerPull)
+        cancel();
+}
+
 // ===========================================================================
 // The user's lane
 // ===========================================================================
@@ -599,6 +606,11 @@ void DatabaseSyncService::runImport(const LocalPtr& op, const QString& path, con
 
 bool DatabaseSyncService::requestFromPeer(const QString& peerId, const ImportOptions& options, QString* error)
 {
+    if (!peerSyncEnabled_) {
+        if (error)
+            *error = tr("Index sharing and sync are disabled.");
+        return false;
+    }
     if (!transport_ || !transport_->isRunning()) {
         if (error)
             *error = tr("P2P is not running.");

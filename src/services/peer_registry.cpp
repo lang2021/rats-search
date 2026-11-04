@@ -35,13 +35,24 @@ void PeerRegistry::setDatabaseSharing(bool enabled)
         transport_->broadcastMessage(QStringLiteral("client_info"), ourStats().toJson());
 }
 
+void PeerRegistry::setIndexSharingEnabled(bool enabled)
+{
+    if (ourIndexSharing_ == enabled)
+        return;
+    ourIndexSharing_ = enabled;
+    // Index counts are still metadata about the user's collection. Refresh
+    // connected peers when the permission changes, including when it closes.
+    if (transport_ && transport_->isRunning())
+        transport_->broadcastMessage(QStringLiteral("client_info"), ourStats().toJson());
+}
+
 domain::PeerStats PeerRegistry::ourStats() const
 {
     domain::PeerStats s;
     s.clientVersion = clientVersion_;
-    s.torrents = ourTorrents_;
-    s.files = ourFiles_;
-    s.totalSize = ourTotalSize_;
+    s.torrents = ourIndexSharing_ ? ourTorrents_ : 0;
+    s.files = ourIndexSharing_ ? ourFiles_ : 0;
+    s.totalSize = ourIndexSharing_ ? ourTotalSize_ : 0;
     s.peersConnected = transport_->peerCount();
     s.databaseSharing = ourDatabaseSharing_;
     return s;

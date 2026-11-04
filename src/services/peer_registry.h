@@ -32,6 +32,8 @@ public:
     // re-broadcast to everyone already connected, so their "who can I sync
     // with?" list stops being wrong the moment the user flips the setting.
     void setDatabaseSharing(bool enabled);
+    void setIndexSharingEnabled(bool enabled);
+    bool indexSharingEnabled() const { return ourIndexSharing_; }
 
     // Peers that advertised they will serve their index. Clients older than the
     // feature never send the flag and so never appear here — which is correct,
@@ -56,6 +58,7 @@ private:
     qint64 ourFiles_ = 0;
     qint64 ourTotalSize_ = 0;
     bool ourDatabaseSharing_ = false;
+    bool ourIndexSharing_ = false;
 
     mutable QMutex mutex_;
     QHash<QString, domain::PeerStats> peers_;

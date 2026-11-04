@@ -54,6 +54,7 @@ signals:
 
 private:
     bool indexExchangeAllowed() const;
+    bool remoteSearchAllowed() const;
     // Register every transport handler and the peer-connected hook.
     void install();
 

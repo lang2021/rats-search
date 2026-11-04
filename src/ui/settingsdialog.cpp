@@ -284,12 +284,16 @@ QWidget* SettingsDialog::createNetworkTab()
     p2pConnectionsSpin_->setToolTip(tr("Maximum number of P2P connections"));
     p2pLayout->addRow(tr("Max connections:"), p2pConnectionsSpin_);
 
+    remoteSearchCheck_ = new QCheckBox(tr("Search connected Rats peers"));
+    remoteSearchCheck_->setToolTip(tr("Send desktop search terms to connected peers. Independent of index sharing."));
+    p2pLayout->addRow(remoteSearchCheck_);
+
     p2pReplicationCheck_ = new QCheckBox(tr("Enable P2P replication (client)"));
     p2pReplicationCheck_->setToolTip(tr("Replicate database from other peers"));
     p2pLayout->addRow(p2pReplicationCheck_);
 
-    p2pReplicationServerCheck_ = new QCheckBox(tr("Enable P2P replication server"));
-    p2pReplicationServerCheck_->setToolTip(tr("Serve database to other peers"));
+    p2pReplicationServerCheck_ = new QCheckBox(tr("Share Feed and random index entries"));
+    p2pReplicationServerCheck_->setToolTip(tr("Let connected peers fetch Feed and random index entries, including file lists."));
     p2pLayout->addRow(p2pReplicationServerCheck_);
 
     databaseSharingCheck_ = new QCheckBox(tr("Let peers download my whole database"));
@@ -667,6 +671,7 @@ void SettingsDialog::loadSettings()
     httpPortSpin_->setValue(config_->httpPort());
     restApiCheck_->setChecked(config_->restApiEnabled());
     p2pConnectionsSpin_->setValue(config_->p2pConnections());
+    remoteSearchCheck_->setChecked(config_->remoteSearchEnabled());
     p2pReplicationCheck_->setChecked(config_->p2pReplication());
     p2pReplicationServerCheck_->setChecked(config_->p2pReplicationServer());
     databaseSharingCheck_->setChecked(config_->databaseSharing());
@@ -755,6 +760,7 @@ void SettingsDialog::saveSettings()
     config_->setHttpPort(httpPortSpin_->value());
     config_->setRestApiEnabled(restApiCheck_->isChecked());
     config_->setP2pConnections(p2pConnectionsSpin_->value());
+    config_->setRemoteSearchEnabled(remoteSearchCheck_->isChecked());
     config_->setP2pReplication(p2pReplicationCheck_->isChecked());
     config_->setP2pReplicationServer(p2pReplicationServerCheck_->isChecked());
     config_->setDatabaseSharing(databaseSharingCheck_->isChecked());

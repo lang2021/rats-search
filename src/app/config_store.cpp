@@ -57,10 +57,10 @@ void ConfigStore::setDefaults()
 {
     config_ = QJsonObject { // Network
         { "httpPort", 8095 }, { "p2pPort", 4444 }, { "dhtPort", 6881 }, { "networkEnabled", false },
-        { "resumeBtSession", false }, { "mdns", false }, { "indexExchange", false },
+        { "resumeBtSession", false }, { "mdns", false }, { "indexExchange", false }, { "remoteSearch", false },
 
         // P2P
-        { "p2pConnections", 10 }, { "p2pReplication", false }, { "p2pReplicationServer", true },
+        { "p2pConnections", 10 }, { "p2pReplication", false }, { "p2pReplicationServer", false },
         { "databaseSharing", false }, { "databaseSnapshotMaxAgeHours", 6 }, { "databaseSnapshotMaxDriftPercent", 10 },
 
         // Indexer
@@ -126,6 +126,11 @@ bool ConfigStore::load()
         loaded["holePunch"] = false;
         loaded["relay"] = false;
     }
+    // Older releases defaulted the random-index serving flag to true and even
+    // switched it on when only client replication was selected. Do not carry
+    // that implicit permission into the separately controlled module.
+    if (!loaded.contains("remoteSearch"))
+        loaded["p2pReplicationServer"] = false;
     for (auto it = loaded.begin(); it != loaded.end(); ++it) {
         if (it.value().isObject() && config_.value(it.key()).isObject()) {
             // Merge nested objects
@@ -171,11 +176,6 @@ void ConfigStore::validateAndClamp()
     config_["uiFontScale"]
         = QJsonValue::fromVariant(clampToRange("uiFontScale", config_["uiFontScale"].toInt(kDefaultUiFontScale)));
 
-    // Replication needs the replication server. The typed setters keep this
-    // invariant on writes; this repairs a config file edited by hand.
-    if (config_["p2pReplication"].toBool() && !config_["p2pReplicationServer"].toBool()) {
-        config_["p2pReplicationServer"] = true;
-    }
 }
 
 // ============================================================================
@@ -270,6 +270,14 @@ void ConfigStore::setIndexExchangeEnabled(bool enabled)
 {
     setValue("indexExchange", enabled);
 }
+bool ConfigStore::remoteSearchEnabled() const
+{
+    return config_["remoteSearch"].toBool(false);
+}
+void ConfigStore::setRemoteSearchEnabled(bool enabled)
+{
+    setValue("remoteSearch", enabled);
+}
 
 // ============================================================================
 // P2P Settings
@@ -290,21 +298,15 @@ bool ConfigStore::p2pReplication() const
 }
 void ConfigStore::setP2pReplication(bool enabled)
 {
-    if (enabled) {
-        setP2pReplicationServer(true); // replication requires the server
-    }
     setValue("p2pReplication", enabled);
 }
 
 bool ConfigStore::p2pReplicationServer() const
 {
-    return config_["p2pReplicationServer"].toBool(true);
+    return config_["p2pReplicationServer"].toBool(false);
 }
 void ConfigStore::setP2pReplicationServer(bool enabled)
 {
-    if (!enabled) {
-        setValue("p2pReplication", false); // no server => no replication
-    }
     setValue("p2pReplicationServer", enabled);
 }
 

@@ -68,6 +68,11 @@ add_rats_test(test_webui ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
 add_rats_test(test_metrics_endpoint)
 add_rats_test(test_api_security)
 
+# Manual loopback integration test. It starts a real librats node and must be
+# executed under an outbound-denying sandbox; never run as part of plain ctest.
+add_executable(test_index_sharing_loopback test_index_sharing_loopback.cpp)
+target_link_libraries(test_index_sharing_loopback PRIVATE Qt6::Test ratscore)
+
 # Copy libmysql.dll next to test executables so the QMYSQL driver can load.
 #
 # It has to be the libmysql the QMYSQL plugin was *built against*. Manticore

@@ -98,6 +98,7 @@ private:
 
     // P2P settings
     QSpinBox* p2pConnectionsSpin_;
+    QCheckBox* remoteSearchCheck_;
     QCheckBox* p2pReplicationCheck_;
     QCheckBox* p2pReplicationServerCheck_;
     QCheckBox* databaseSharingCheck_;

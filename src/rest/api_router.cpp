@@ -183,7 +183,7 @@ void peerLookup(ApiRouter* ctx, app::Application* app, const QString& peerId, co
     bool asArray, const ResultCallback& respond)
 {
     peer::PeerApi* peerApi = app->peerApi();
-    if (!peerApi || peerId.isEmpty()) {
+    if (!peerApi || peerId.isEmpty() || !app->config()->remoteSearchEnabled()) {
         dhtLookup(ctx, app, hash, includeFiles, asArray, respond);
         return;
     }
@@ -671,6 +671,10 @@ void ApiRouter::registerMethods()
     });
 
     add("database.pull", [this](const QJsonObject& params, const ResultCallback& respond) {
+        if (!app_->databaseSync()->peerSyncEnabled()) {
+            respond(Result::failure("P2P database pull is unavailable"));
+            return;
+        }
         service::DatabaseSyncService* sync = app_->databaseSync();
         if (!sync) {
             respond(Result::failure("Database sync is not available"));
@@ -725,6 +729,10 @@ void ApiRouter::registerMethods()
     // snapshot renews itself once it ages out or the index drifts away from it —
     // but it is the escape hatch when a user wants peers to see recent work now.
     add("database.snapshot", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        if (!app_->transport()->isRunning() || !app_->config()->indexExchangeEnabled()) {
+            respond(Result::failure("Outward index sharing is disabled"));
+            return;
+        }
         service::DatabaseSyncService* sync = app_->databaseSync();
         if (!sync) {
             respond(Result::failure("Database sync is not available"));
@@ -845,7 +853,7 @@ void ApiRouter::registerMethods()
 
     add("config.set", [this](const QJsonObject& params, const ResultCallback& respond) {
         const QStringList changed = app_->config()->fromJson(params);
-        if (changed.contains(QStringLiteral("networkEnabled")))
+        if (!changed.isEmpty())
             app_->config()->save();
         QJsonObject result;
         result["changed"] = QJsonArray::fromStringList(changed);

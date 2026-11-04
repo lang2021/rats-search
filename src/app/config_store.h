@@ -78,6 +78,10 @@ public:
     void setMdnsEnabled(bool enabled);
     bool indexExchangeEnabled() const;
     void setIndexExchangeEnabled(bool enabled);
+    // Sending the user's search terms to connected Rats peers is independent
+    // from answering peers' index requests.
+    bool remoteSearchEnabled() const;
+    void setRemoteSearchEnabled(bool enabled);
 
     // =========================================================================
     // P2P Settings
@@ -92,10 +96,8 @@ public:
     bool p2pReplicationServer() const;
     void setP2pReplicationServer(bool enabled);
 
-    // Whether other peers may pull our whole index (databaseRequest). On by
-    // default, like the rest of the replication machinery — a swarm where nobody
-    // serves cannot replicate at all. It is also advertised in the client_info
-    // handshake, so peers only ever offer each other partners that will say yes.
+    // Whether other peers may pull our whole index (databaseRequest). This is
+    // advertised in the client_info handshake only while sharing is active.
     bool databaseSharing() const;
     void setDatabaseSharing(bool enabled);
 

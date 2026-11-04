@@ -22,13 +22,13 @@ private slots:
     void unchangedValue_doesNotEmit();
     void fromJson_emitsOneBatchedSignal();
     void p2pConnections_isClamped();
-    void replicationImpliesReplicationServer();
-    void disablingReplicationServer_disablesReplication();
+    void replicationAndServingRequireSeparateConsent();
     void languageAndDarkMode_haveDedicatedSignals();
     void uiFont_defaultsAndClamping();
     void saveThenLoad_roundTrips();
     void networkGate_defaultsOffAndPersists();
     void legacyNetworkDefaultsAreNotConsent();
+    void indexModulePreferencePersists();
 
 private:
     QTemporaryDir* dir_ = nullptr;
@@ -83,16 +83,35 @@ void TestConfigStore::legacyNetworkDefaultsAreNotConsent()
 {
     QFile file(path_);
     QVERIFY(file.open(QIODevice::WriteOnly));
-    file.write(R"({"databaseSharing":true,"p2pReplication":true,"upnp":true,"holePunch":true,"relay":true})");
+    file.write(R"({"databaseSharing":true,"p2pReplication":true,"p2pReplicationServer":true,"upnp":true,"holePunch":true,"relay":true})");
     file.close();
     ConfigStore loaded(path_);
     QVERIFY(loaded.load());
     QVERIFY(!loaded.networkEnabled());
     QVERIFY(!loaded.databaseSharing());
     QVERIFY(!loaded.p2pReplication());
+    QVERIFY(!loaded.p2pReplicationServer());
     QVERIFY(!loaded.upnpEnabled());
     QVERIFY(!loaded.holePunchEnabled());
     QVERIFY(!loaded.relayEnabled());
+}
+
+void TestConfigStore::indexModulePreferencePersists()
+{
+    QVERIFY(!config_->indexExchangeEnabled());
+    config_->setIndexExchangeEnabled(true);
+    config_->setRemoteSearchEnabled(true);
+    config_->setDatabaseSharing(true);
+    config_->setP2pReplication(true);
+    config_->setP2pReplicationServer(true);
+    QVERIFY(config_->save());
+    ConfigStore loaded(path_);
+    QVERIFY(loaded.load());
+    QVERIFY(loaded.indexExchangeEnabled());
+    QVERIFY(loaded.remoteSearchEnabled());
+    QVERIFY(loaded.databaseSharing());
+    QVERIFY(loaded.p2pReplication());
+    QVERIFY(loaded.p2pReplicationServer());
 }
 
 void TestConfigStore::typedSetter_nestedKey_emitsConfigChanged()
@@ -139,23 +158,34 @@ void TestConfigStore::p2pConnections_isClamped()
     QCOMPARE(spy.count(), 0);
 }
 
-void TestConfigStore::replicationImpliesReplicationServer()
+void TestConfigStore::replicationAndServingRequireSeparateConsent()
 {
-    config_->setP2pReplicationServer(false);
+    QVERIFY(!config_->remoteSearchEnabled());
     QVERIFY(!config_->p2pReplicationServer());
 
     config_->setP2pReplication(true);
     QVERIFY(config_->p2pReplication());
-    QVERIFY(config_->p2pReplicationServer()); // pulled along
-}
-
-void TestConfigStore::disablingReplicationServer_disablesReplication()
-{
-    config_->setP2pReplication(true);
-    config_->setP2pReplicationServer(false);
-
     QVERIFY(!config_->p2pReplicationServer());
+    config_->setP2pReplicationServer(false);
+    QVERIFY(!config_->p2pReplicationServer());
+    QVERIFY(config_->p2pReplication());
+
+    config_->fromJson({ { "p2pReplicationServer", true }, { "p2pReplication", false } });
+    QVERIFY(config_->p2pReplicationServer());
     QVERIFY(!config_->p2pReplication());
+
+    config_->setRemoteSearchEnabled(true);
+    QVERIFY(config_->remoteSearchEnabled());
+    QVERIFY(!config_->indexExchangeEnabled());
+
+    config_->setIndexExchangeEnabled(true);
+    config_->setDatabaseSharing(true);
+    config_->setP2pReplication(true);
+    config_->setIndexExchangeEnabled(false);
+    QVERIFY(config_->remoteSearchEnabled());
+    QVERIFY(config_->p2pReplication());
+    QVERIFY(config_->p2pReplicationServer());
+    QVERIFY(config_->databaseSharing()); // preference retained; runtime gate is closed
 }
 
 void TestConfigStore::languageAndDarkMode_haveDedicatedSignals()

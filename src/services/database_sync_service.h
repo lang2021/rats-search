@@ -188,6 +188,9 @@ public:
     // Whether we answer other peers' databaseRequest (config: databaseSharing).
     void setSharingEnabled(bool enabled);
     bool sharingEnabled() const { return sharingEnabled_; }
+    // Outbound peer pulls are a separate lane from serving our database.
+    void setPeerSyncEnabled(bool enabled);
+    bool peerSyncEnabled() const { return peerSyncEnabled_; }
 
     // Peer-layer hooks. PeerApi owns the wire names and calls these; the service
     // owns the policy and the transfer.
@@ -341,6 +344,7 @@ private:
     QHash<QString, qint64> lastRequestMs_; // per-peer rate limit
 
     bool sharingEnabled_ = false;
+    bool peerSyncEnabled_ = false;
     qint64 lastHeartbeatMs_ = 0;
     qint64 lastProgressPublishMs_ = 0;
 };

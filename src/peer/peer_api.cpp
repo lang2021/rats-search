@@ -66,6 +66,11 @@ bool PeerApi::indexExchangeAllowed() const
     return app_->transport()->isRunning() && app_->config()->indexExchangeEnabled();
 }
 
+bool PeerApi::remoteSearchAllowed() const
+{
+    return app_->transport()->isRunning() && app_->config()->remoteSearchEnabled();
+}
+
 void PeerApi::install()
 {
     net::P2PTransport* transport = app_->transport();
@@ -215,7 +220,7 @@ void PeerApi::handleTorrentRequest(const QString& peerId, const QJsonObject& dat
 
 void PeerApi::handleFeedRequest(const QString& peerId, const QJsonObject& data)
 {
-    if (!indexExchangeAllowed()) return;
+    if (!indexExchangeAllowed() || !app_->config()->p2pReplicationServer()) return;
     Q_UNUSED(data);
     service::FeedService* feed = app_->feed();
     if (!feed)
@@ -252,6 +257,8 @@ void PeerApi::handleRandomTorrentsRequest(const QString& peerId, const QJsonObje
 
 void PeerApi::handleDatabaseRequest(const QString& peerId, const QJsonObject& data)
 {
+    if (!indexExchangeAllowed() || !app_->databaseSync()->sharingEnabled())
+        return;
     qInfo() << "[PeerApi] databaseRequest from" << shortId(peerId);
     service::DatabaseSyncService* sync = app_->databaseSync();
     if (!sync) {
@@ -264,6 +271,8 @@ void PeerApi::handleDatabaseRequest(const QString& peerId, const QJsonObject& da
 
 void PeerApi::handleDatabaseCancel(const QString& peerId, const QJsonObject& data)
 {
+    if (!indexExchangeAllowed())
+        return;
     qInfo() << "[PeerApi] databaseCancel from" << shortId(peerId);
     if (service::DatabaseSyncService* sync = app_->databaseSync())
         sync->handlePeerCancel(peerId, data);
@@ -275,7 +284,7 @@ void PeerApi::handleDatabaseCancel(const QString& peerId, const QJsonObject& dat
 
 void PeerApi::handleSearchResult(const QString& peerId, const QJsonObject& data)
 {
-    if (!indexExchangeAllowed()) return;
+    if (!remoteSearchAllowed()) return;
     QString hash = data["hash"].toString();
     if (hash.isEmpty())
         hash = data["info_hash"].toString();
@@ -295,7 +304,7 @@ void PeerApi::handleSearchResult(const QString& peerId, const QJsonObject& data)
 
 void PeerApi::handleSearchFilesResult(const QString& peerId, const QJsonObject& data)
 {
-    if (!indexExchangeAllowed()) return;
+    if (!remoteSearchAllowed()) return;
     const QString query = data["text"].toString();
 
     QJsonObject item = data;
@@ -312,7 +321,7 @@ void PeerApi::handleSearchFilesResult(const QString& peerId, const QJsonObject& 
 
 void PeerApi::handleTorrentResponse(const QString& peerId, const QJsonObject& data)
 {
-    if (!indexExchangeAllowed()) return;
+    if (!remoteSearchAllowed()) return;
     QString hash = data["hash"].toString();
     if (hash.isEmpty())
         hash = data["info_hash"].toString();
@@ -333,7 +342,7 @@ void PeerApi::handleTorrentResponse(const QString& peerId, const QJsonObject& da
 
 void PeerApi::handleFeedResponse(const QString& peerId, const QJsonObject& data)
 {
-    if (!indexExchangeAllowed()) return;
+    if (!app_->transport()->isRunning() || !app_->config()->p2pReplication()) return;
     service::FeedService* feed = app_->feed();
     if (!feed)
         return;
@@ -363,7 +372,7 @@ void PeerApi::handleFeedResponse(const QString& peerId, const QJsonObject& data)
 
 void PeerApi::handleRandomTorrentsResponse(const QString& peerId, const QJsonObject& data)
 {
-    if (!indexExchangeAllowed()) return;
+    if (!app_->transport()->isRunning() || !app_->config()->p2pReplication()) return;
     const QJsonArray torrents = data["torrents"].toArray();
     int inserted = 0;
     for (const QJsonValue& v : torrents) {
@@ -376,6 +385,8 @@ void PeerApi::handleRandomTorrentsResponse(const QString& peerId, const QJsonObj
 
 void PeerApi::handleDatabaseResponse(const QString& peerId, const QJsonObject& data)
 {
+    if (!app_->databaseSync()->peerSyncEnabled())
+        return;
     qInfo() << "[PeerApi] databaseRequest_response from" << shortId(peerId)
             << (data["accepted"].toBool(false) ? "accepted" : "refused");
     if (service::DatabaseSyncService* sync = app_->databaseSync())
@@ -384,13 +395,15 @@ void PeerApi::handleDatabaseResponse(const QString& peerId, const QJsonObject& d
 
 void PeerApi::handleDatabaseProgress(const QString& peerId, const QJsonObject& data)
 {
+    if (!app_->databaseSync()->peerSyncEnabled())
+        return;
     if (service::DatabaseSyncService* sync = app_->databaseSync())
         sync->handlePeerProgress(peerId, data);
 }
 
 void PeerApi::handleTorrentAnnounce(const QString& peerId, const QJsonObject& data)
 {
-    if (!indexExchangeAllowed()) return;
+    if (!app_->transport()->isRunning() || !app_->config()->p2pReplication()) return;
     const QString hash = data["info_hash"].toString();
     const QString name = data["name"].toString();
     if (hash.isEmpty() || name.isEmpty())
@@ -406,7 +419,7 @@ void PeerApi::handleTorrentAnnounce(const QString& peerId, const QJsonObject& da
 
 void PeerApi::requestTorrent(const QString& peerId, const QString& hash, bool includeFiles)
 {
-    if (!indexExchangeAllowed()) return;
+    if (!remoteSearchAllowed()) return;
     net::P2PTransport* transport = app_->transport();
     if (!transport || peerId.isEmpty() || hash.length() != 40)
         return;
@@ -429,7 +442,7 @@ void PeerApi::onPeerConnected(const QString& peerId)
     qInfo() << "[PeerApi] peer connected:" << peerId.left(16);
 
     // Pull the peer's feed for P2P feed sync.
-    if (indexExchangeAllowed()) {
+    if (app_->config()->p2pReplication()) {
         if (service::FeedService* feed = app_->feed()) {
             transport->sendMessage(
                 peerId, "feed", QJsonObject { { "localSize", feed->size() }, { "localFeedDate", feed->feedDate() } });
@@ -437,7 +450,7 @@ void PeerApi::onPeerConnected(const QString& peerId)
     }
 
     // Ask for an initial replication batch when replication is enabled.
-    if (indexExchangeAllowed() && app_->config()->p2pReplication())
+    if (app_->config()->p2pReplication())
         transport->sendMessage(peerId, "randomTorrents", QJsonObject { { "limit", 5 } });
 }
 

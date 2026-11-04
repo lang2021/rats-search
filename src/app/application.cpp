@@ -172,13 +172,18 @@ void Application::applyConfig()
     d_->downloads->setDefaultDownloadPath(c->downloadPath());
     d_->trackers->setCountScrapingEnabled(network && c->trackersEnabled());
     d_->trackers->setInfoScrapingEnabled(network && c->trackersEnabled());
-    d_->replication->setEnabled(network && c->indexExchangeEnabled() && c->p2pReplication());
+    d_->replication->setEnabled(network && c->p2pReplication());
+    // Pulling a peer's index is an outbound, explicitly requested operation;
+    // it does not grant permission to answer anyone else's index requests.
+    d_->databaseSync->setPeerSyncEnabled(network);
     // One value drives both: what we actually do when asked, and what we tell
     // peers we would do. They must not disagree, or peers offer us to users who
     // will only ever get a refusal.
-    const bool shareDatabase = network && d_->options.shareDatabase.value_or(c->databaseSharing());
+    const bool shareDatabase = network && c->indexExchangeEnabled()
+        && d_->options.shareDatabase.value_or(c->databaseSharing());
     d_->databaseSync->setSharingEnabled(shareDatabase);
     d_->peers->setDatabaseSharing(shareDatabase);
+    d_->peers->setIndexSharingEnabled(network && c->indexExchangeEnabled());
     {
         service::DatabaseSnapshot::Policy policy;
         policy.maxAgeSecs = static_cast<qint64>(c->databaseSnapshotMaxAgeHours()) * 3600;
@@ -212,7 +217,7 @@ void Application::applyConfig()
         else
             d_->crawler->stop();
 
-        if (c->indexExchangeEnabled() && c->p2pReplication())
+        if (c->p2pReplication())
             d_->replication->start();
         else
             d_->replication->stop();
@@ -282,7 +287,7 @@ bool Application::start()
             d_->downloads->enableMonitoring();
             if (d_->config->indexerEnabled() || d_->options.forceSpider)
                 d_->crawler->start();
-            if (d_->config->indexExchangeEnabled() && d_->config->p2pReplication())
+            if (d_->config->p2pReplication())
                 d_->replication->start();
             // Session restore resumes downloads and completed torrents (seeding).
             // It requires its own explicit opt-in, separate from the network gate.
@@ -355,7 +360,9 @@ void Application::stopNetwork()
     d_->trackers->stop();
     d_->replication->stop();
     d_->databaseSync->setSharingEnabled(false);
+    d_->databaseSync->setPeerSyncEnabled(false);
     d_->peers->setDatabaseSharing(false);
+    d_->peers->setIndexSharingEnabled(false);
     if (d_->databaseSync->status().operation == service::DatabaseSyncService::Operation::PeerPull)
         d_->databaseSync->cancel();
     if (d_->downloadSessionLoaded) {
@@ -370,6 +377,7 @@ void Application::stopNetwork()
 QJsonObject Application::featureStatus() const
 {
     const bool actual = d_->transport->isRunning();
+    const auto serve = d_->databaseSync->serveStatus();
     return QJsonObject {
         { "networkDesired", d_->config->networkEnabled() },
         { "networkRunning", actual },
@@ -383,6 +391,11 @@ QJsonObject Application::featureStatus() const
         { "databaseSharingRunning", d_->databaseSync->sharingEnabled() },
         { "indexExchangeAllowed", d_->config->indexExchangeEnabled() },
         { "indexExchangeRunning", actual && d_->config->indexExchangeEnabled() },
+        { "indexSharingDesired", d_->config->indexExchangeEnabled() },
+        { "indexSharingRunning", d_->peers->indexSharingEnabled() },
+        { "indexSharingServing", serve.generating || serve.waiting > 0 || serve.sending > 0 },
+        { "remoteSearchDesired", d_->config->remoteSearchEnabled() },
+        { "remoteSearchRunning", actual && d_->config->remoteSearchEnabled() },
         { "peerCount", d_->transport->peerCount() },
         { "lastError", d_->networkError },
     };
