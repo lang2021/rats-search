@@ -66,6 +66,7 @@ add_rats_test(test_manticore_queries)
 # API server tests (webui static serving, health/metrics endpoints)
 add_rats_test(test_webui ${CMAKE_SOURCE_DIR}/resources/resources.qrc)
 add_rats_test(test_metrics_endpoint)
+add_rats_test(test_api_security)
 
 # Copy libmysql.dll next to test executables so the QMYSQL driver can load.
 #

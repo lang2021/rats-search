@@ -268,6 +268,10 @@ int main(int argc, char* argv[])
     QCommandLineOption maxPeersOption(QStringList() << "m" << "max-peers", QStringLiteral("Max P2P connections"), "n");
     QCommandLineOption spiderOption(QStringList() << "s" << "spider", QStringLiteral("Force-enable the DHT spider"));
     QCommandLineOption webuiDirOption(QStringList() << "w" << "webui-dir", QStringLiteral("Web UI directory"), "path");
+    QCommandLineOption apiBindOption(QStringList() << "api-bind", QStringLiteral("HTTP and WebSocket bind address"), "address");
+    QCommandLineOption apiFileRootOption(QStringList() << "api-file-root",
+        QStringLiteral("Authorize HTTP and WebSocket file operations inside this existing directory (repeatable)"), "path");
+    QCommandLineOption legacyWebuiOption(QStringList() << "legacy-webui-dir", QStringLiteral("Legacy Web UI directory"), "path");
     QCommandLineOption shareDbOption(QStringList() << "share-db",
         QStringLiteral("Serve the whole database to peers that ask: on|off "
                        "(overrides the databaseSharing config key for this run)"),
@@ -275,6 +279,9 @@ int main(int argc, char* argv[])
     QCommandLineParser parser;
     addCommonOptions(parser, portOption, dhtPortOption, dataDirOption, maxPeersOption, spiderOption, consoleOption,
         webuiDirOption, shareDbOption);
+    parser.addOption(apiBindOption);
+    parser.addOption(apiFileRootOption);
+    parser.addOption(legacyWebuiOption);
     parser.process(*qapp);
 
     const QString dataDir = resolveDataDirectory(parser, dataDirOption);
@@ -306,6 +313,9 @@ int main(int argc, char* argv[])
     options.maxPeers = parser.isSet(maxPeersOption) ? parser.value(maxPeersOption).toInt() : 0;
     options.forceSpider = parser.isSet(spiderOption);
     options.webuiDir = parser.isSet(webuiDirOption) ? parser.value(webuiDirOption) : QString();
+    options.apiBindAddress = parser.isSet(apiBindOption) ? parser.value(apiBindOption) : QString();
+    options.apiFileRoots = parser.values(apiFileRootOption);
+    options.legacyWebuiDir = parser.isSet(legacyWebuiOption) ? parser.value(legacyWebuiOption) : QString();
     if (parser.isSet(shareDbOption)) {
         options.shareDatabase = parseBoolOption(parser.value(shareDbOption));
         if (!options.shareDatabase) {

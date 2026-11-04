@@ -1,5 +1,55 @@
 const { createApp } = Vue;
 
+const RATS_TOKEN_KEY = 'rats-api-token';
+let ratsTokenRequest;
+function ratsApiToken() {
+    const saved = sessionStorage.getItem(RATS_TOKEN_KEY) || '';
+    if (saved) return Promise.resolve(saved);
+    if (ratsTokenRequest) return ratsTokenRequest;
+    ratsTokenRequest = new Promise(resolve => {
+        const dialog = document.createElement('dialog');
+        dialog.setAttribute('aria-label', 'API token');
+        dialog.style.cssText = 'background:#10120d;color:#e6e9df;border:1px solid #b5ff00;padding:24px;max-width:min(420px,90vw)';
+        const form = document.createElement('form');
+        form.method = 'dialog';
+        const label = document.createElement('label');
+        label.textContent = 'Enter the API token from the data directory api-token file';
+        const input = document.createElement('input');
+        input.type = 'password';
+        input.autocomplete = 'off';
+        input.required = true;
+        input.style.cssText = 'display:block;box-sizing:border-box;width:100%;margin:16px 0;padding:10px;background:#080908;color:#fff;border:1px solid #7b8c45';
+        const submit = document.createElement('button');
+        submit.type = 'submit';
+        submit.textContent = 'Connect API';
+        submit.style.cssText = 'padding:9px 16px;background:#b5ff00;color:#080908;border:0;cursor:pointer';
+        label.appendChild(input);
+        form.append(label, submit);
+        dialog.appendChild(form);
+        document.body.appendChild(dialog);
+        let submitted = false;
+        form.addEventListener('submit', () => { submitted = true; });
+        dialog.addEventListener('close', () => {
+            const token = submitted ? input.value.trim() : '';
+            if (token) sessionStorage.setItem(RATS_TOKEN_KEY, token);
+            dialog.remove();
+            ratsTokenRequest = undefined;
+            resolve(token);
+        }, { once: true });
+        dialog.showModal();
+        input.focus();
+    });
+    return ratsTokenRequest;
+}
+async function apiFetch(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    const token = await ratsApiToken();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const response = await fetch(url, { ...options, headers });
+    if (response.status === 401) sessionStorage.removeItem(RATS_TOKEN_KEY);
+    return response;
+}
+
 const EN_WEBUI = {
     'activity.pause': 'Pause',
     'activity.resume': 'Resume',
@@ -286,7 +336,7 @@ const app = createApp({
             this.results = [];
 
             try {
-                const response = await fetch(`/api/search.torrents?text=${encodeURIComponent(this.searchQuery)}&limit=50`);
+                const response = await apiFetch(`/api/search.torrents?text=${encodeURIComponent(this.searchQuery)}&limit=50`);
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -307,7 +357,7 @@ const app = createApp({
 
         async loadStats() {
             try {
-                const response = await fetch('/api/stats.get');
+                const response = await apiFetch('/api/stats.get');
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -320,7 +370,7 @@ const app = createApp({
 
         async loadP2PStatus() {
             try {
-                const response = await fetch('/api/stats.p2pStatus');
+                const response = await apiFetch('/api/stats.p2pStatus');
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -336,7 +386,7 @@ const app = createApp({
 
         async loadTopTorrents() {
             try {
-                const response = await fetch('/api/search.top?limit=20');
+                const response = await apiFetch('/api/search.top?limit=20');
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -349,7 +399,7 @@ const app = createApp({
 
         async loadFeed() {
             try {
-                const response = await fetch('/api/feed.get?index=0&limit=20');
+                const response = await apiFetch('/api/feed.get?index=0&limit=20');
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -362,7 +412,7 @@ const app = createApp({
 
         async loadDownloads() {
             try {
-                const response = await fetch('/api/download.list');
+                const response = await apiFetch('/api/download.list');
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -422,7 +472,7 @@ const app = createApp({
 
         async loadConfig() {
             try {
-                const response = await fetch('/api/config.get');
+                const response = await apiFetch('/api/config.get');
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -437,7 +487,7 @@ const app = createApp({
             if (!this.config) return;
 
             try {
-                const response = await fetch('/api/config.set', {
+                const response = await apiFetch('/api/config.set', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(this.config)
@@ -458,7 +508,7 @@ const app = createApp({
         async checkTorrents() {
             this.cleanupStatus = this.t('Checking torrents against filters...') || 'Checking...';
             try {
-                const resp = await fetch('/api/torrent.cleanup?dryRun=true');
+                const resp = await apiFetch('/api/torrent.cleanup?dryRun=true');
                 const data = await resp.json();
                 if (data.success && data.data) {
                     const matched = data.data.matched || 0;
@@ -476,7 +526,7 @@ const app = createApp({
             if (!confirm(this.t("Remove torrents that don't match the current filters") || 'Remove torrents that don\'t match the current filters?')) return;
             this.cleanupStatus = this.t('settings.cleaningTorrents') || 'Cleaning...';
             try {
-                const resp = await fetch('/api/torrent.cleanup?dryRun=false');
+                const resp = await apiFetch('/api/torrent.cleanup?dryRun=false');
                 const data = await resp.json();
                 if (data.success && data.data) {
                     const matched = data.data.matched || 0;
@@ -513,7 +563,7 @@ const app = createApp({
 
         async pauseDownload(hash) {
             try {
-                await fetch(`/api/download.pause?hash=${hash}`);
+                await apiFetch(`/api/download.pause?hash=${hash}`);
                 await this.loadDownloads();
             } catch (error) {
                 console.error('Pause error:', error);
@@ -522,7 +572,7 @@ const app = createApp({
 
         async resumeDownload(hash) {
             try {
-                await fetch(`/api/download.resume?hash=${hash}`);
+                await apiFetch(`/api/download.resume?hash=${hash}`);
                 await this.loadDownloads();
             } catch (error) {
                 console.error('Resume error:', error);
@@ -531,7 +581,7 @@ const app = createApp({
 
         async cancelDownload(hash) {
             try {
-                await fetch(`/api/download.remove?hash=${hash}`);
+                await apiFetch(`/api/download.remove?hash=${hash}`);
                 await this.loadDownloads();
                 this.showToast(this.t('toast.downloadCancelled'), 'info');
             } catch (error) {
@@ -544,7 +594,7 @@ const app = createApp({
             this.torrentFiles = [];
 
             try {
-                const response = await fetch(`/api/torrent.get?hash=${torrent.hash}&files=true`);
+                const response = await apiFetch(`/api/torrent.get?hash=${torrent.hash}&files=true`);
                 const data = await response.json();
 
                 if (data.success && data.data) {
@@ -560,14 +610,14 @@ const app = createApp({
             if (!torrent || !torrent.hash) return;
 
             try {
-                const response = await fetch(`/api/torrent.export?hash=${torrent.hash}`);
+                const response = await apiFetch(`/api/torrent.export?hash=${torrent.hash}`);
                 const data = await response.json();
 
                 if (data.success && data.data && data.data.downloadUrl) {
                     const fileName = data.data.name || torrent.hash;
                     let fileResponse;
                     for (let attempt = 0; attempt < 30; attempt++) {
-                        fileResponse = await fetch(data.data.downloadUrl, { cache: 'no-store' });
+                        fileResponse = await apiFetch(data.data.downloadUrl, { cache: 'no-store' });
                         if (fileResponse.ok) break;
                         await new Promise(resolve => setTimeout(resolve, 1000));
                     }
@@ -680,7 +730,7 @@ const app = createApp({
         async voteGood() {
             if (!this.selectedTorrent) return;
             try {
-                await fetch(`/api/vote.cast?hash=${this.selectedTorrent.hash}&good=true`);
+                await apiFetch(`/api/vote.cast?hash=${this.selectedTorrent.hash}&good=true`);
                 this.lastVote = 'good';
                 this.showToast(this.t('toast.voteGood'), 'success');
             } catch (e) {
@@ -691,7 +741,7 @@ const app = createApp({
         async voteBad() {
             if (!this.selectedTorrent) return;
             try {
-                await fetch(`/api/vote.cast?hash=${this.selectedTorrent.hash}&good=false`);
+                await apiFetch(`/api/vote.cast?hash=${this.selectedTorrent.hash}&good=false`);
                 this.lastVote = 'bad';
                 this.showToast(this.t('toast.voteBad'), 'info');
             } catch (e) {
@@ -702,7 +752,7 @@ const app = createApp({
         async startDownload(torrent) {
             if (!torrent || !torrent.hash) return;
             try {
-                const resp = await fetch(`/api/download.add?hash=${torrent.hash}`);
+                const resp = await apiFetch(`/api/download.add?hash=${torrent.hash}`);
                 const data = await resp.json();
                 if (data.success) {
                     this.showToast(this.t('toast.downloadStarted'), 'success');
@@ -919,7 +969,7 @@ const app = createApp({
 
         async importTorrentByPath(path) {
             try {
-                const resp = await fetch(`/api/download.addFile?path=${encodeURIComponent(path)}`);
+                const resp = await apiFetch(`/api/download.addFile?path=${encodeURIComponent(path)}`);
                 const data = await resp.json();
                 if (data.success) {
                     const name = data.data?.name || path.split('/').pop();
@@ -942,6 +992,7 @@ const app = createApp({
 
             try {
                 this.ws = new WebSocket(url);
+                this.ws.onopen = async () => this.ws.send(JSON.stringify({ method: 'auth', params: { token: await ratsApiToken() } }));
 
                 this.ws.onmessage = (event) => {
                     try {

@@ -42,11 +42,16 @@ type Config = {
         <button
           mat-flat-button
           color="primary"
-          (click)="save()"
+          (click)="confirming = true"
           [disabled]="saving"
         >
           保存设置
         </button>
+        <span *ngIf="confirming" class="confirm" role="group" aria-label="确认保存设置">
+          网络、索引与共享开关可能改变后台活动。
+          <button mat-flat-button color="primary" (click)="save()" [disabled]="saving">确认保存</button>
+          <button mat-button (click)="confirming = false" [disabled]="saving">取消</button>
+        </span>
         <button mat-button (click)="load()">重新读取</button>
       </mat-card-content>
       <mat-card-content *ngIf="!config">{{
@@ -62,6 +67,7 @@ type Config = {
       mat-card-content {
         padding: 20px;
       }
+      .confirm { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
       .options {
         display: flex;
         flex-direction: column;
@@ -75,6 +81,7 @@ export class SettingsComponent implements OnInit {
   config?: Config;
   message = "";
   saving = false;
+  confirming = false;
 
   ngOnInit(): void {
     void this.load();
@@ -90,7 +97,8 @@ export class SettingsComponent implements OnInit {
   }
 
   async save(): Promise<void> {
-    if (!this.config) return;
+    if (!this.config || !this.confirming) return;
+    this.confirming = false;
     this.saving = true;
     try {
       const { safeSearch, indexer, databaseSharing, p2pReplication } =

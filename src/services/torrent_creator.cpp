@@ -35,7 +35,9 @@ QString TorrentCreator::createAndSeed(const QString& path, const QStringList& tr
 bool TorrentCreator::createTorrentFile(const QString& path, const QString& outputFile, const QStringList& trackers,
     const QString& comment, const CreationProgressCallback& progress)
 {
-    if (!engine_ || !engine_->isReady()) {
+    // Hashing and writing a .torrent file is local work; only createAndSeed()
+    // needs the live BitTorrent transport.
+    if (!engine_) {
         qWarning() << "TorrentCreator: Not ready for torrent creation";
         return false;
     }

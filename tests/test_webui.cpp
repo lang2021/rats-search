@@ -25,6 +25,8 @@ private slots:
     void cleanupTestCase();
     void testStaticFileServing();
     void testRootPathServesIndex();
+    void testAngularRouteServesApplicationShell();
+    void testLegacyRouteServesFallbackUi();
     void testDirectoryTraversalViaHttp();
     void testContentTypeHtml();
     void testContentTypeCss();
@@ -73,6 +75,7 @@ void TestWebUI::initTestCase()
 
     server = std::make_unique<rats::rest::ApiServer>(nullptr);
     server->setWebuiDir(tempDir.path() + "/webui");
+    server->setLegacyWebuiDir(tempDir.path() + "/webui");
     QTcpServer probe;
     QVERIFY(probe.listen(QHostAddress::LocalHost, 0));
     const int freePort = probe.serverPort();
@@ -112,6 +115,24 @@ void TestWebUI::testStaticFileServing()
 void TestWebUI::testRootPathServesIndex()
 {
     HttpResponse resp = httpGet("/");
+    QCOMPARE(resp.statusCode, 200);
+    QVERIFY(resp.body.contains("<html><body>Test</body></html>"));
+}
+
+void TestWebUI::testAngularRouteServesApplicationShell()
+{
+    HttpResponse resp = httpGet("/console/network");
+    QCOMPARE(resp.statusCode, 200);
+    QVERIFY(resp.body.contains("<html><body>Test</body></html>"));
+    const QString hash(40, QLatin1Char('a'));
+    QCOMPARE(httpGet("/search/permalink/" + hash).statusCode, 200);
+    QCOMPARE(httpGet("/search/" + hash).statusCode, 200);
+    QCOMPARE(httpGet("/search/missing.js").statusCode, 404);
+}
+
+void TestWebUI::testLegacyRouteServesFallbackUi()
+{
+    HttpResponse resp = httpGet("/legacy");
     QCOMPARE(resp.statusCode, 200);
     QVERIFY(resp.body.contains("<html><body>Test</body></html>"));
 }

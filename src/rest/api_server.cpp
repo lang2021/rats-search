@@ -13,6 +13,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
@@ -20,9 +21,12 @@
 #include <QJsonDocument>
 #include <QMap>
 #include <QPointer>
+#include <QRandomGenerator>
+#include <QSaveFile>
 #include <QSet>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QWebSocket>
@@ -89,7 +93,8 @@ QByteArray buildHttpResponse(int statusCode, const QString& statusText, const QB
     response.append(QStringLiteral("Content-Length: %1\r\n").arg(body.size()).toUtf8());
     response.append("Access-Control-Allow-Origin: *\r\n");
     response.append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
-    response.append("Access-Control-Allow-Headers: Content-Type\r\n");
+    response.append("Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
+    response.append("Cache-Control: no-store\r\n");
     response.append("Connection: close\r\n");
     response.append("\r\n");
     response.append(body);
@@ -164,12 +169,200 @@ ApiServer::~ApiServer()
     stop();
 }
 
-bool ApiServer::start(int httpPort, int wsPort)
+void ApiServer::setAuthorizedFileRoots(const QStringList& roots)
+{
+    configuredFileRoots_ = roots;
+}
+
+bool ApiServer::initializeSecurity()
+{
+    authorizedFileRoots_.clear();
+    for (const QString& root : configuredFileRoots_) {
+        if (!QDir::isAbsolutePath(root)) return false;
+        const QFileInfo info(root);
+        if (!info.isDir() || info.canonicalFilePath().isEmpty()) return false;
+        authorizedFileRoots_.append(QDir::cleanPath(info.canonicalFilePath()));
+    }
+
+    // Tests without an Application receive a process-local secret. Normal runs
+    // keep the secret in the selected data directory so the user can unlock the
+    // browser without putting credentials in command-line arguments or logs.
+    if (!app_) {
+        if (authenticationToken_.isEmpty()) {
+            QByteArray token;
+            for (int i = 0; i < 4; ++i)
+                token += QByteArray::number(QRandomGenerator::system()->generate64(), 16).rightJustified(16, '0');
+            authenticationToken_ = token;
+        }
+        return true;
+    }
+
+    const QString dataRoot = QFileInfo(app_->options().dataDirectory).canonicalFilePath();
+    if (dataRoot.isEmpty()) return false;
+    const QString fallbackUi = QDir::currentPath() + QStringLiteral("/webui");
+    for (const QString& staticRoot : {webuiDir_.isEmpty() ? fallbackUi : webuiDir_,
+             legacyWebuiDir_.isEmpty() ? fallbackUi : legacyWebuiDir_}) {
+        const QString canonical = QFileInfo(staticRoot).canonicalFilePath();
+        if (!canonical.isEmpty() && (dataRoot == canonical ||
+                dataRoot.startsWith(canonical + QDir::separator()))) {
+            qWarning() << "Web UI directory cannot contain the API data directory";
+            return false;
+        }
+    }
+
+    const QString path = QDir(app_->options().dataDirectory).filePath(QStringLiteral("api-token"));
+    const QFileInfo info(path);
+    if (info.exists() || info.isSymbolicLink()) {
+        if (!info.isFile() || info.isSymbolicLink()) return false;
+#ifndef Q_OS_WIN
+        const auto unsafe = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup |
+            QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
+        if (info.permissions() & unsafe) return false;
+#endif
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) return false;
+        authenticationToken_ = file.readAll().trimmed();
+    } else {
+        QByteArray token;
+        for (int i = 0; i < 4; ++i)
+            token += QByteArray::number(QRandomGenerator::system()->generate64(), 16).rightJustified(16, '0');
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly)) return false;
+#ifndef Q_OS_WIN
+        if (!file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) return false;
+#endif
+        if (file.write(token + '\n') != token.size() + 1 || !file.commit()) return false;
+        authenticationToken_ = token;
+    }
+
+    if (authenticationToken_.size() != 64) return false;
+    for (char c : authenticationToken_) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+bool ApiServer::isAuthorized(const QByteArray& authorization) const
+{
+    const QByteArray value = authorization.trimmed();
+    if (!value.startsWith("Bearer ") || authenticationToken_.isEmpty()) return false;
+    const QByteArray supplied = value.mid(7);
+    if (supplied.size() != authenticationToken_.size()) return false;
+    unsigned char difference = 0;
+    for (qsizetype i = 0; i < supplied.size(); ++i)
+        difference |= static_cast<unsigned char>(supplied[i] ^ authenticationToken_[i]);
+    return difference == 0;
+}
+
+bool ApiServer::isAuthorizedPath(const QString& path, bool existing) const
+{
+    if (path.isEmpty() || !QDir::isAbsolutePath(path) || authorizedFileRoots_.isEmpty()) return false;
+    // Do not normalize away '..' before resolving symlinks. The OS follows a
+    // symlink first and only then processes '..', which can escape the root even
+    // when QDir::cleanPath(path) appears to be inside it.
+    if (QDir::fromNativeSeparators(path).split('/').contains(QStringLiteral(".."))) return false;
+    const QString cleaned = QDir::cleanPath(path);
+    QFileInfo info(cleaned);
+    if (info.isSymbolicLink() && !info.exists()) return false; // dangling link
+    if (existing && !info.exists()) return false;
+
+    QString resolved;
+    if (info.exists()) {
+        resolved = info.canonicalFilePath();
+    } else {
+        // The target may not exist yet. Resolve every existing parent before
+        // allowing the backend to create the final path.
+        QString ancestor = cleaned;
+        QStringList missing;
+        while (!QFileInfo::exists(ancestor)) {
+            const QFileInfo part(ancestor);
+            if (part.isSymbolicLink()) return false;
+            missing.prepend(part.fileName());
+            const QString parent = part.absolutePath();
+            if (parent == ancestor) return false;
+            ancestor = parent;
+        }
+        const QFileInfo parentInfo(ancestor);
+        if (!parentInfo.isDir()) return false;
+        resolved = parentInfo.canonicalFilePath();
+        for (const QString& part : missing) resolved = QDir(resolved).filePath(part);
+    }
+    resolved = QDir::cleanPath(resolved);
+    if (app_) {
+        const QDir dataDir(QFileInfo(app_->options().dataDirectory).canonicalFilePath());
+        if (resolved == dataDir.filePath(QStringLiteral("api-token")) ||
+            resolved == dataDir.filePath(QStringLiteral("identity.key"))) return false;
+    }
+    for (const QString& root : authorizedFileRoots_) {
+        const QString prefix = root.endsWith(QDir::separator()) ? root : root + QDir::separator();
+        if (resolved == root || resolved.startsWith(prefix)) return true;
+    }
+    return false;
+}
+
+bool ApiServer::validateFileAccess(const QString& method, const QJsonObject& params, QString* error) const
+{
+    auto requirePath = [this, error](const QString& path, bool existing) {
+        if (isAuthorizedPath(path, existing)) return true;
+        if (error) *error = QStringLiteral("Local file path is outside authorized API roots");
+        return false;
+    };
+    auto aliasedPath = [&params]() {
+        return (params.contains("path") ? params["path"] : params["file"]).toString();
+    };
+    auto optionalOutput = [&params, &requirePath](const char* key) {
+        const QString path = params[QLatin1String(key)].toString();
+        return path.isEmpty() || requirePath(path, false);
+    };
+
+    if (method == QLatin1String("torrent.create")) {
+        const QString source = params["path"].toString();
+        if (!requirePath(source, true) || !optionalOutput("output")) return false;
+        // TorrentCreator recursively follows directory entries, including
+        // symlinks. Reject links in an authorized tree so a private file outside
+        // the root cannot be hashed or seeded through a nested alias.
+        if (QFileInfo(source).isDir()) {
+            QDirIterator entries(source, QDir::AllEntries | QDir::NoDotAndDotDot | QDir::System,
+                QDirIterator::Subdirectories);
+            while (entries.hasNext()) {
+                entries.next();
+                const QFileInfo entry = entries.fileInfo();
+                if (entry.isSymbolicLink() || !isAuthorizedPath(entry.absoluteFilePath(), true)) {
+                    if (error) *error = QStringLiteral("Torrent source contains a link or path outside authorized API roots");
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    if (method == QLatin1String("torrent.import") || method == QLatin1String("database.import"))
+        return requirePath(aliasedPath(), true);
+    if (method == QLatin1String("database.export"))
+        return requirePath(aliasedPath(), false);
+    if (method == QLatin1String("download.addFile"))
+        return requirePath(aliasedPath(), true) && optionalOutput("savePath");
+    if (method == QLatin1String("download.add"))
+        return optionalOutput("savePath");
+    if (method == QLatin1String("config.set") && params.contains("downloadPath"))
+        return requirePath(params["downloadPath"].toString(), false);
+    return true;
+}
+
+bool ApiServer::start(int httpPort, int wsPort, const QString& bindAddress)
 {
     if (running_) {
         return true;
     }
 
+    const QHostAddress host(bindAddress);
+    if (host.isNull()) {
+        qWarning() << "Invalid API bind address:" << bindAddress;
+        return false;
+    }
+    if (!initializeSecurity()) {
+        qWarning() << "API security initialization failed";
+        return false;
+    }
     // ---- HTTP server ----
     if (httpPort > 0) {
         httpServer_ = std::make_unique<QTcpServer>(this);
@@ -186,7 +379,7 @@ bool ApiServer::start(int httpPort, int wsPort)
             }
         });
 
-        if (!httpServer_->listen(QHostAddress::Any, static_cast<quint16>(httpPort))) {
+        if (!httpServer_->listen(host, static_cast<quint16>(httpPort))) {
             qWarning() << "Failed to start HTTP server on port" << httpPort << ":" << httpServer_->errorString();
             httpServer_.reset();
             return false;
@@ -210,6 +403,12 @@ bool ApiServer::start(int httpPort, int wsPort)
                 QWebSocket* socket = wsServer_->nextPendingConnection();
                 wsClients_.append(socket);
 
+                QPointer<QWebSocket> guardedSocket(socket);
+                QTimer::singleShot(10000, this, [this, guardedSocket]() {
+                    if (guardedSocket && !authenticatedWsClients_.contains(guardedSocket))
+                        guardedSocket->close(QWebSocketProtocol::CloseCodePolicyViolated, "Authentication required");
+                });
+
                 const QString address = socket->peerAddress().toString();
                 qInfo() << "WebSocket client connected:" << address;
 
@@ -218,15 +417,21 @@ bool ApiServer::start(int httpPort, int wsPort)
 
                 connect(socket, &QWebSocket::disconnected, this, [this, socket, address]() {
                     wsClients_.removeOne(socket);
+                    authenticatedWsClients_.remove(socket);
                     socket->deleteLater();
                     qInfo() << "WebSocket client disconnected:" << address;
                 });
             }
         });
 
-        if (!wsServer_->listen(QHostAddress::Any, static_cast<quint16>(wsPortActual))) {
+        if (!wsServer_->listen(host, static_cast<quint16>(wsPortActual))) {
             qWarning() << "Failed to start WebSocket server on port" << wsPortActual << ":" << wsServer_->errorString();
             wsServer_.reset();
+            if (httpServer_) {
+                httpServer_->close();
+                httpServer_.reset();
+                httpPort_ = 0;
+            }
             return false;
         }
 
@@ -250,6 +455,7 @@ void ApiServer::stop()
         client->close();
     }
     wsClients_.clear();
+    authenticatedWsClients_.clear();
     httpBuffers_.clear();
 
     if (wsServer_) {
@@ -274,7 +480,7 @@ void ApiServer::broadcastEvent(const QString& event, const QJsonValue& data)
     const QString json = QString::fromUtf8(QJsonDocument(msg).toJson(QJsonDocument::Compact));
 
     for (QWebSocket* client : wsClients_) {
-        if (client->isValid()) {
+        if (client->isValid() && authenticatedWsClients_.contains(client)) {
             client->sendTextMessage(json);
         }
     }
@@ -317,6 +523,17 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
         return;
     }
 
+    // Static UI and the minimal liveness probe are public; every data-bearing
+    // HTTP endpoint requires the same token as WebSocket messages and events.
+    const bool protectedPath = (req.path.startsWith("/api/") && !req.path.startsWith("/api/translations/")) ||
+        req.path == "/metrics" || req.path == "/readyz" || req.path.startsWith("/download/");
+    if (protectedPath && !isAuthorized(req.headers.value(QStringLiteral("authorization")).toUtf8())) {
+        requestsByStatus_[401]++;
+        socket->write(buildHttpResponse(401, "Unauthorized", "{\"error\":\"Authentication required\"}"));
+        socket->disconnectFromHost();
+        return;
+    }
+
     // Health check endpoints (Kubernetes probes)
     if (req.path == "/healthz") {
         socket->write(handleHealthz());
@@ -346,6 +563,28 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
     if (req.path.startsWith("/api/translations/")) {
         const QString lang = req.path.mid(QStringLiteral("/api/translations/").size());
         socket->write(handleTranslations(lang));
+        socket->disconnectFromHost();
+        return;
+    }
+
+    if (req.path == "/legacy" || req.path.startsWith("/legacy/")) {
+        socket->write(handleStaticFile(req.path));
+        socket->disconnectFromHost();
+        return;
+    }
+
+    // Angular path routing: serve the application shell only for known UI
+    // routes. API, health, metrics, downloads and missing assets retain their
+    // normal response behavior.
+    const QString routePath = req.path;
+    const QString legacyHash = routePath.startsWith("/search/permalink/")
+        ? routePath.mid(QStringLiteral("/search/permalink/").size())
+        : routePath.startsWith("/search/") ? routePath.mid(QStringLiteral("/search/").size()) : QString();
+    const bool legacyDetailRoute = infohash::isValid(legacyHash);
+    const bool appRoute = routePath == "/search" || legacyDetailRoute || routePath == "/discover" || routePath == "/history" ||
+        routePath == "/console" || routePath.startsWith("/console/") || routePath.startsWith("/torrent/");
+    if (appRoute) {
+        socket->write(handleStaticFile("/index.html"));
         socket->disconnectFromHost();
         return;
     }
@@ -398,6 +637,17 @@ void ApiServer::dispatchHttp(QTcpSocket* socket, const QString& method, const QJ
     httpRequestsTotal_++;
     requestsByMethod_[method]++;
     requestStartTimes_[requestId] = QDateTime::currentMSecsSinceEpoch();
+
+    QString accessError;
+    if (!validateFileAccess(method, params, &accessError)) {
+        httpRequestsError_++;
+        requestsByStatus_[403]++;
+        requestStartTimes_.remove(requestId);
+        const QJsonObject env = resultToEnvelope(Result::failure(accessError), requestId);
+        socket->write(buildHttpResponse(403, "Forbidden", QJsonDocument(env).toJson()));
+        socket->disconnectFromHost();
+        return;
+    }
 
     if (!router_) {
         httpRequestsError_++;
@@ -473,8 +723,25 @@ void ApiServer::onWsMessage(QWebSocket* socket, const QString& message)
     const QJsonObject params = obj["params"].toObject();
     const QString requestId = obj["id"].toString();
 
+    if (!authenticatedWsClients_.contains(socket)) {
+        if (method == QLatin1String("auth") && isAuthorized("Bearer " + params["token"].toString().toUtf8())) {
+            authenticatedWsClients_.insert(socket);
+            socket->sendTextMessage("{\"success\":true,\"data\":{\"authenticated\":true}}");
+        } else {
+            socket->close(QWebSocketProtocol::CloseCodePolicyViolated, "Authentication required");
+        }
+        return;
+    }
+
     if (method.isEmpty()) {
         socket->sendTextMessage("{\"success\":false,\"error\":\"Missing method\"}");
+        return;
+    }
+
+    QString accessError;
+    if (!validateFileAccess(method, params, &accessError)) {
+        const QJsonObject env = resultToEnvelope(Result::failure(accessError), requestId);
+        socket->sendTextMessage(QString::fromUtf8(QJsonDocument(env).toJson(QJsonDocument::Compact)));
         return;
     }
 
@@ -501,6 +768,11 @@ void ApiServer::onWsMessage(QWebSocket* socket, const QString& message)
 void ApiServer::setWebuiDir(const QString& dir)
 {
     webuiDir_ = dir;
+}
+
+void ApiServer::setLegacyWebuiDir(const QString& dir)
+{
+    legacyWebuiDir_ = dir;
 }
 
 void ApiServer::setApplication(app::Application* app)
@@ -827,17 +1099,24 @@ QByteArray ApiServer::handleMetrics() const
 
 QByteArray ApiServer::handleStaticFile(const QString& path) const
 {
-    QString dir = webuiDir_;
+    QString requestPath = path;
+    const bool legacy = path == "/legacy" || path.startsWith("/legacy/") || path.startsWith("/css/") ||
+        path.startsWith("/js/") || path.startsWith("/vendor/");
+    QString dir = legacy ? legacyWebuiDir_ : webuiDir_;
+    if (legacy) {
+        requestPath = path == "/legacy" ? QStringLiteral("/") :
+            path.startsWith("/legacy/") ? path.mid(QStringLiteral("/legacy").size()) : path;
+    }
     if (dir.isEmpty()) {
-        dir = QDir::currentPath() + "/webui";
+        dir = legacy ? QDir::currentPath() + "/webui" : QDir::currentPath() + "/webui";
     }
     dir = QDir(dir).absolutePath();
 
     QString filePath;
-    if (path == "/" || path.isEmpty()) {
+    if (requestPath == "/" || requestPath.isEmpty()) {
         filePath = dir + "/index.html";
     } else {
-        filePath = dir + path;
+        filePath = dir + requestPath;
     }
 
     // Security: prevent directory traversal

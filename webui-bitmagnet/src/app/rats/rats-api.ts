@@ -17,6 +17,58 @@ type RatsEnvelope<T> = {
   error?: string;
 };
 
+const tokenKey = "rats-api-token";
+let tokenRequest: Promise<string> | undefined;
+
+export function ratsAuthToken(): string {
+  return sessionStorage.getItem(tokenKey) ?? "";
+}
+
+export function requestRatsToken(): Promise<string> {
+  const saved = ratsAuthToken();
+  if (saved) return Promise.resolve(saved);
+  if (tokenRequest) return tokenRequest;
+  tokenRequest = new Promise<string>((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("aria-label", "API 令牌");
+    dialog.style.cssText = "background:#10120d;color:#e6e9df;border:1px solid #b5ff00;padding:24px;max-width:min(420px,90vw)";
+    const form = document.createElement("form");
+    form.method = "dialog";
+    const label = document.createElement("label");
+    label.textContent = "输入本机数据目录 api-token 文件中的 API 令牌";
+    const input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "off";
+    input.required = true;
+    input.style.cssText = "display:block;box-sizing:border-box;width:100%;margin:16px 0;padding:10px;background:#080908;color:#fff;border:1px solid #7b8c45";
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.textContent = "连接 API";
+    submit.style.cssText = "padding:9px 16px;background:#b5ff00;color:#080908;border:0;cursor:pointer";
+    label.appendChild(input);
+    form.append(label, submit);
+    dialog.appendChild(form);
+    document.body.appendChild(dialog);
+    let submitted = false;
+    form.addEventListener("submit", () => { submitted = true; });
+    dialog.addEventListener("close", () => {
+      const token = submitted ? input.value.trim() : "";
+      if (token) sessionStorage.setItem(tokenKey, token);
+      dialog.remove();
+      tokenRequest = undefined;
+      resolve(token);
+    }, { once: true });
+    dialog.showModal();
+    input.focus();
+  });
+  return tokenRequest;
+}
+
+async function authorizationHeaders(): Promise<Record<string, string>> {
+  const token = await requestRatsToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 /** The existing Rats Search HTTP API uses method names under /api/. */
 export async function ratsCall<T>(
   method: string,
@@ -25,11 +77,15 @@ export async function ratsCall<T>(
 ): Promise<T> {
   const response = await fetch(`/api/${method}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...await authorizationHeaders() },
     body: JSON.stringify(params),
     signal,
   });
   const envelope = (await response.json()) as RatsEnvelope<T>;
+  if (response.status === 401) {
+    sessionStorage.removeItem(tokenKey);
+    throw new Error("API 令牌无效；刷新页面后重新输入。");
+  }
   if (!response.ok || !envelope.success) {
     throw new Error(envelope.error ?? `Rats Search API: ${response.status}`);
   }
@@ -37,6 +93,6 @@ export async function ratsCall<T>(
 }
 
 export async function ratsReady(signal?: AbortSignal): Promise<boolean> {
-  const response = await fetch("/readyz", { signal });
+  const response = await fetch("/readyz", { signal, headers: await authorizationHeaders() });
   return response.ok;
 }

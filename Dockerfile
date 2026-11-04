@@ -101,4 +101,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # CMD runs inside entrypoint (switched to rats user there)
-CMD ["/app/RatsSearch", "--console", "--spider", "--max-peers", "30", "--data-dir", "/data", "--webui-dir", "/app/webui"]
+CMD ["/app/RatsSearch", "--console", "--spider", "--max-peers", "30", "--data-dir", "/data", "--webui-dir", "/app/webui", "--api-bind", "0.0.0.0"]

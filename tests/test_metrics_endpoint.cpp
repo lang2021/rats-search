@@ -51,6 +51,8 @@ QByteArray TestMetricsEndpoint::get(const QString& path)
 {
     QNetworkAccessManager nam;
     QNetworkRequest req(QUrl(QStringLiteral("http://127.0.0.1:%1%2").arg(port).arg(path)));
+    if (path != "/healthz")
+        req.setRawHeader("Authorization", "Bearer " + server->authenticationToken());
     QNetworkReply* reply = nam.get(req);
 
     QSignalSpy spy(reply, &QNetworkReply::finished);

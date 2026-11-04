@@ -8,7 +8,9 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QSet>
 #include <QString>
+#include <QStringList>
 #include <limits>
 #include <memory>
 
@@ -49,7 +51,7 @@ public:
     //   httpPort: port for the HTTP REST API (0 disables it).
     //   wsPort:   port for WebSocket (0 disables, -1 shares by using httpPort +
     //   1).
-    bool start(int httpPort = 8095, int wsPort = -1);
+    bool start(int httpPort = 8095, int wsPort = -1, const QString& bindAddress = QStringLiteral("127.0.0.1"));
     void stop();
 
     int httpPort() const { return httpPort_; }
@@ -59,9 +61,13 @@ public:
 
     // Set webui directory for static file serving
     void setWebuiDir(const QString& dir);
+    void setLegacyWebuiDir(const QString& dir);
 
     // Set application pointer for metrics (P2P, DB, crawler, downloads)
     void setApplication(rats::app::Application* app);
+    void setAuthorizedFileRoots(const QStringList& roots);
+    // In-process callers and tests only. Never expose this value through HTTP or WS.
+    QByteArray authenticationToken() const { return authenticationToken_; }
 
 private:
     // Push an event to every connected WebSocket client.
@@ -85,17 +91,26 @@ private:
     void onHttpReadyRead(QTcpSocket* socket);
     void dispatchHttp(QTcpSocket* socket, const QString& method, const QJsonObject& params);
     void onWsMessage(QWebSocket* socket, const QString& message);
+    bool initializeSecurity();
+    bool isAuthorized(const QByteArray& authorization) const;
+    bool validateFileAccess(const QString& method, const QJsonObject& params, QString* error) const;
+    bool isAuthorizedPath(const QString& path, bool existing) const;
 
     ApiRouter* router_ = nullptr;
     rats::app::Application* app_ = nullptr;
     std::unique_ptr<QTcpServer> httpServer_;
     std::unique_ptr<QWebSocketServer> wsServer_;
     QList<QWebSocket*> wsClients_;
+    QSet<QWebSocket*> authenticatedWsClients_;
     QHash<QTcpSocket*, QByteArray> httpBuffers_;
     int httpPort_ = 0;
     int wsPort_ = 0;
     bool running_ = false;
     QString webuiDir_;
+    QString legacyWebuiDir_;
+    QStringList configuredFileRoots_;
+    QStringList authorizedFileRoots_;
+    QByteArray authenticationToken_;
 
     // Metrics tracking
     qint64 startTimeMs_ = 0;

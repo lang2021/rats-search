@@ -283,7 +283,21 @@ bool Application::start()
     if (d_->config->restApiEnabled() || !d_->options.webuiDir.isEmpty()) {
         if (!d_->options.webuiDir.isEmpty())
             d_->apiServer->setWebuiDir(d_->options.webuiDir);
-        d_->apiServer->start(d_->config->httpPort());
+        d_->apiServer->setLegacyWebuiDir(d_->options.legacyWebuiDir.isEmpty()
+                ? QDir::currentPath() + QStringLiteral("/webui")
+                : d_->options.legacyWebuiDir);
+        d_->apiServer->setAuthorizedFileRoots(d_->options.apiFileRoots);
+        if (!d_->apiServer->start(d_->config->httpPort(), -1,
+                d_->options.apiBindAddress.isEmpty() ? QStringLiteral("127.0.0.1") : d_->options.apiBindAddress)) {
+            qCritical() << "[Application] HTTP/WebSocket API failed to start";
+            d_->crawler->stop();
+            d_->trackers->stop();
+            d_->replication->stop();
+            d_->databaseSync->shutdown();
+            d_->transport->stop();
+            d_->manticore->stop();
+            return false;
+        }
     }
 
     d_->running = true;
