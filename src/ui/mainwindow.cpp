@@ -1969,7 +1969,8 @@ void MainWindow::createTorrent()
     layout->addWidget(commentEdit);
 
     QCheckBox* seedCheckBox = new QCheckBox(tr("Start seeding immediately"));
-    seedCheckBox->setChecked(true);
+    seedCheckBox->setChecked(false);
+    seedCheckBox->setEnabled(app_->engine() && app_->engine()->fileUploadAllowed());
     layout->addWidget(seedCheckBox);
 
     QProgressBar* progressBar = new QProgressBar();
@@ -2028,15 +2029,26 @@ void MainWindow::createTorrent()
             }
         };
 
-        // TorrentCreator hashes the content, starts seeding and registers the
-        // download. This is a blocking call (hashing) — acceptable for the modal.
-        QString hash = app_->creator()->createAndSeed(path, trackers, comment,
-            /*saveTorrentFilePath*/ QString(), progressCallback);
+        // Hashing is a blocking call, acceptable for this modal dialog.
+        const bool seed = seedCheckBox->isChecked();
+        const QString output = seed ? QString() : QFileDialog::getSaveFileName(
+            &dialog, tr("Save Torrent File"), QFileInfo(path).fileName() + ".torrent", tr("Torrent files (*.torrent)"));
+        if (!seed && output.isEmpty()) {
+            createBtn->setEnabled(true);
+            cancelBtn->setEnabled(true);
+            progressBar->setVisible(false);
+            return;
+        }
+        const QString hash = seed ? app_->creator()->createAndSeed(path, trackers, comment,
+            QString(), progressCallback) : QString();
+        const bool created = seed ? !hash.isEmpty()
+            : app_->creator()->createTorrentFile(path, output, trackers, comment, progressCallback);
 
-        if (!hash.isEmpty()) {
+        if (created) {
             statusLabel->setText(tr("✅ Torrent created successfully!"));
-            QMessageBox::information(
-                &dialog, tr("Torrent Created"), tr("Torrent created and seeding.\n\nHash: %1").arg(hash));
+            QMessageBox::information(&dialog, tr("Torrent Created"), seed
+                ? tr("Torrent created and seeding.\n\nHash: %1").arg(hash)
+                : tr("Torrent file saved to:\n%1").arg(output));
             dialog.accept();
         } else {
             statusLabel->setText(tr("❌ Failed to create torrent"));

@@ -57,7 +57,8 @@ void ConfigStore::setDefaults()
 {
     config_ = QJsonObject { // Network
         { "httpPort", 8095 }, { "p2pPort", 4444 }, { "dhtPort", 6881 }, { "networkEnabled", false },
-        { "resumeBtSession", false }, { "mdns", false }, { "indexExchange", false }, { "remoteSearch", false },
+        { "resumeBtSession", false }, { "btFileDownload", false }, { "btFileUpload", false },
+        { "mdns", false }, { "indexExchange", false }, { "remoteSearch", false },
 
         // P2P
         { "p2pConnections", 10 }, { "p2pReplication", false }, { "p2pReplicationServer", false },
@@ -253,6 +254,22 @@ bool ConfigStore::resumeBtSession() const
 void ConfigStore::setResumeBtSession(bool enabled)
 {
     setValue("resumeBtSession", enabled);
+}
+bool ConfigStore::btFileDownloadEnabled() const
+{
+    return config_["btFileDownload"].toBool(false);
+}
+void ConfigStore::setBtFileDownloadEnabled(bool enabled)
+{
+    setValue("btFileDownload", enabled);
+}
+bool ConfigStore::btFileUploadEnabled() const
+{
+    return config_["btFileUpload"].toBool(false);
+}
+void ConfigStore::setBtFileUploadEnabled(bool enabled)
+{
+    setValue("btFileUpload", enabled);
 }
 bool ConfigStore::mdnsEnabled() const
 {

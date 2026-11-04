@@ -166,10 +166,18 @@ void Application::applyConfig()
 {
     ConfigStore* c = d_->config.get();
     const bool network = c->networkEnabled() && d_->transport->isRunning();
+    // A user may enable or disable session restore while the network is already
+    // running. Keep shutdown persistence aligned with the current choice; never
+    // load an old session as a side effect of changing this setting at runtime.
+    if (d_->running && d_->transport->isRunning())
+        d_->downloadSessionLoaded = c->resumeBtSession();
 
     d_->filter->setSettings(c->filterSettings());
 
     d_->downloads->setDefaultDownloadPath(c->downloadPath());
+    d_->engine->setFileTransferPermissions(network && c->btFileDownloadEnabled(),
+        network && c->btFileUploadEnabled());
+    d_->downloads->enforceFileTransferPermissions();
     d_->trackers->setCountScrapingEnabled(network && c->trackersEnabled());
     d_->trackers->setInfoScrapingEnabled(network && c->trackersEnabled());
     d_->replication->setEnabled(network && c->p2pReplication());
@@ -386,6 +394,9 @@ QJsonObject Application::featureStatus() const
         { "mdnsRunning", d_->transport->isMdnsRunning() },
         { "p2pRunning", actual },
         { "btEngineReady", d_->engine->isReady() },
+        { "btFileDownloadAllowed", actual && d_->engine->fileDownloadAllowed() },
+        { "btFileUploadAllowed", actual && d_->engine->fileUploadAllowed() },
+        { "btSessionRestoreDesired", d_->config->resumeBtSession() },
         { "crawlerRunning", d_->crawler->isRunning() },
         { "replicationRunning", d_->replication->isRunning() },
         { "databaseSharingRunning", d_->databaseSync->sharingEnabled() },

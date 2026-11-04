@@ -568,6 +568,10 @@ void ApiRouter::registerMethods()
         const bool seed = params["seed"].toBool(false);
 
         if (seed) {
+            if (!app_->engine()->fileUploadAllowed()) {
+                respond(Result::failure("BT file upload is disabled"));
+                return;
+            }
             const QString output = params["output"].toString();
             const QString hash = app_->creator()->createAndSeed(path, trackers, comment, output);
             if (hash.isEmpty()) {
@@ -750,6 +754,10 @@ void ApiRouter::registerMethods()
     // Downloads
     // -----------------------------------------------------------------------
     add("download.add", [this](const QJsonObject& params, const ResultCallback& respond) {
+        if (!app_->engine()->fileDownloadAllowed()) {
+            respond(Result::failure("BT file download is disabled"));
+            return;
+        }
         const QString link = params.contains("hash") ? params["hash"].toString() : params["magnet"].toString();
         const QString savePath = params["savePath"].toString();
         const QString hash = net::TorrentEngine::parseInfoHash(link);
@@ -766,6 +774,10 @@ void ApiRouter::registerMethods()
     });
 
     add("download.addFile", [this](const QJsonObject& params, const ResultCallback& respond) {
+        if (!app_->engine()->fileDownloadAllowed()) {
+            respond(Result::failure("BT file download is disabled"));
+            return;
+        }
         const QString file = params.contains("path") ? params["path"].toString() : params["file"].toString();
         const QString savePath = params["savePath"].toString();
         if (file.isEmpty()) {
@@ -785,7 +797,7 @@ void ApiRouter::registerMethods()
     add("download.resume", [this](const QJsonObject& params, const ResultCallback& respond) {
         const QString hash = infohash::normalize(params["hash"].toString());
         const bool ok = app_->downloads()->resume(hash);
-        respond(ok ? Result::success() : Result::failure("Download not found"));
+        respond(ok ? Result::success() : Result::failure("Download not found or file transfer disabled"));
     });
 
     add("download.remove", [this](const QJsonObject& params, const ResultCallback& respond) {

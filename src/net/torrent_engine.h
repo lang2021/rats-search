@@ -75,13 +75,16 @@ public:
 
     // True when the BitTorrent subsystem is up and a client is available.
     bool isReady() const;
+    void setFileTransferPermissions(bool download, bool upload);
+    bool fileDownloadAllowed() const { return fileDownloadAllowed_; }
+    bool fileUploadAllowed() const { return fileUploadAllowed_; }
 
     // --- Adding torrents ----------------------------------------------------
     // Add a metadata-less magnet download; metadata arrives later via BEP 9.
     bool addMagnet(const QString& hash, const QString& savePath);
     // Add a magnet, loading any resume file saved next to the download (restores
     // downloaded pieces and, if embedded, the metadata).
-    bool addMagnetResumed(const QString& hash, const QString& savePath);
+    bool addMagnetResumed(const QString& hash, const QString& savePath, bool initiallyPaused = false);
     // Parse a .torrent file (pure; no side effects). valid=false on failure.
     TorrentMetadata readTorrentFile(const QString& torrentFile) const;
     // Parse a .torrent file and hand it to librats. false on parse or add error.
@@ -128,6 +131,8 @@ private:
     librats::bittorrent::Client* client() const;
 
     P2PTransport* transport_; // borrowed, non-owning
+    bool fileDownloadAllowed_ = false;
+    bool fileUploadAllowed_ = false;
 };
 
 } // namespace rats::net

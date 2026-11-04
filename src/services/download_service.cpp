@@ -96,7 +96,7 @@ bool DownloadService::isReady() const
 
 bool DownloadService::add(const QString& magnetLink, const QString& savePath)
 {
-    if (!isReady()) {
+    if (!isReady() || !engine_->fileDownloadAllowed()) {
         qWarning() << "DownloadService: Not ready";
         return false;
     }
@@ -142,7 +142,7 @@ bool DownloadService::addWithInfo(const domain::Torrent& info, const QString& sa
         qWarning() << "DownloadService: Invalid hash for download:" << info.hash;
         return false;
     }
-    if (!isReady()) {
+    if (!isReady() || !engine_->fileDownloadAllowed()) {
         qWarning() << "DownloadService: Not ready";
         return false;
     }
@@ -180,7 +180,7 @@ bool DownloadService::addWithInfo(const domain::Torrent& info, const QString& sa
 
 bool DownloadService::addFromFile(const QString& torrentFile, const QString& savePath)
 {
-    if (!isReady()) {
+    if (!isReady() || !engine_->fileDownloadAllowed()) {
         qWarning() << "DownloadService: Not ready";
         return false;
     }
@@ -248,7 +248,10 @@ bool DownloadService::restore(const Download& entry)
     ensureDir(path);
 
     qInfo() << "DownloadService: Restoring torrent" << h.left(8) << entry.name.left(30) << "from" << path;
-    if (!engine_->addMagnetResumed(h, path)) {
+    const bool initiallyPaused = entry.paused
+        || (!engine_->fileDownloadAllowed() && !engine_->fileUploadAllowed())
+        || (entry.completed && !engine_->fileUploadAllowed());
+    if (!engine_->addMagnetResumed(h, path, initiallyPaused)) {
         qWarning() << "DownloadService: Failed to restore torrent:" << h.left(8);
         return false;
     }
@@ -258,13 +261,14 @@ bool DownloadService::restore(const Download& entry)
     d.savePath = path;
     d.name = entry.name.isEmpty() ? h : entry.name;
     d.ready = false;
+    d.paused = initiallyPaused;
 
     // Seed the live state from the persisted session. librats rechecks the
     // on-disk files asynchronously — status() right now still reports 0 % /
     // not-complete — so without this a finished torrent would flash as a 0 %
     // download until the recheck lands. The 1 s poll stays authoritative and
-    // reconciles once the check completes. `paused`/`removeOnDone` are applied by
-    // loadSession() afterwards, so they are deliberately not seeded here.
+    // reconciles once the check completes. The effective paused state was
+    // applied before start(); removeOnDone is applied by loadSession().
     d.completed = entry.completed;
     d.totalSize = entry.totalSize;
     d.downloadedBytes = entry.downloadedBytes;
@@ -351,15 +355,17 @@ bool DownloadService::pause(const QString& hash)
 
 bool DownloadService::resume(const QString& hash)
 {
-    if (!engine_) {
+    if (!engine_ || (!engine_->fileDownloadAllowed() && !engine_->fileUploadAllowed())) {
         return false;
     }
     const QString h = infohash::normalize(hash);
+    const bool complete = engine_->status(h).isComplete;
 
     {
         QMutexLocker lock(&mutex_);
         auto it = downloads_.find(h);
-        if (it == downloads_.end() || !it->paused) {
+        if (it == downloads_.end() || !it->paused
+            || (!engine_->fileUploadAllowed() && (it->completed || complete))) {
             return false;
         }
         it->paused = false;
@@ -534,6 +540,18 @@ void DownloadService::setDefaultDownloadPath(const QString& path)
     defaultDownloadPath_ = path;
 }
 
+void DownloadService::enforceFileTransferPermissions()
+{
+    if (!engine_) return;
+    if (engine_->fileDownloadAllowed() && engine_->fileUploadAllowed()) return;
+    const QVector<Download> snapshot = allDownloads();
+    for (const Download& d : snapshot) {
+        if ((!engine_->fileDownloadAllowed() && !engine_->fileUploadAllowed())
+            || (d.completed && !engine_->fileUploadAllowed()))
+            pause(d.hash);
+    }
+}
+
 // ============================================================================
 // Session persistence
 // ============================================================================
@@ -573,9 +591,6 @@ int DownloadService::loadSession(const QString& filePath)
                 << (e.completed ? "(completed/seeding)" : "(downloading)");
 
         if (restore(e)) {
-            if (e.paused) {
-                pause(e.hash);
-            }
             setRemoveOnDone(e.hash, e.removeOnDone);
 
             if (!e.files.isEmpty()) {
@@ -724,6 +739,8 @@ void DownloadService::flushTransitions(const Transitions& t)
     }
 
     for (const QString& hash : t.newlyCompleted) {
+        if (engine_ && !engine_->fileUploadAllowed())
+            pause(hash);
         qInfo() << "DownloadService: Download completed:" << hash.left(8);
         emit downloadCompleted(hash);
     }

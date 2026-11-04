@@ -121,6 +121,16 @@ QByteArray assembleTorrentFile(const bt::TorrentInfo& info)
 
 TorrentEngine::TorrentEngine(P2PTransport* transport) : transport_(transport) { }
 
+void TorrentEngine::setFileTransferPermissions(bool download, bool upload)
+{
+    fileDownloadAllowed_ = download;
+    fileUploadAllowed_ = upload;
+#ifdef RATS_SEARCH_FEATURES
+    if (auto* c = client())
+        c->set_file_transfer_permissions(download, upload);
+#endif
+}
+
 librats::bittorrent::Client* TorrentEngine::client() const
 {
 #ifdef RATS_SEARCH_FEATURES
@@ -153,6 +163,7 @@ bool TorrentEngine::isReady() const
 bool TorrentEngine::addMagnet(const QString& hash, const QString& savePath)
 {
 #ifdef RATS_SEARCH_FEATURES
+    if (!fileDownloadAllowed_) return false;
     auto* c = client();
     if (!c) {
         return false;
@@ -168,7 +179,7 @@ bool TorrentEngine::addMagnet(const QString& hash, const QString& savePath)
 #endif
 }
 
-bool TorrentEngine::addMagnetResumed(const QString& hash, const QString& savePath)
+bool TorrentEngine::addMagnetResumed(const QString& hash, const QString& savePath, bool initiallyPaused)
 {
 #ifdef RATS_SEARCH_FEATURES
     auto* c = client();
@@ -177,11 +188,13 @@ bool TorrentEngine::addMagnetResumed(const QString& hash, const QString& savePat
     }
     // Loads any resume file saved next to the download: restores downloaded pieces
     // and, if the resume file embeds the info dict, the metadata without a re-fetch.
-    auto* download = c->add_magnet_resumed("magnet:?xt=urn:btih:" + hash.toStdString(), savePath.toStdString());
+    auto* download = c->add_magnet_resumed("magnet:?xt=urn:btih:" + hash.toStdString(),
+        savePath.toStdString(), initiallyPaused);
     return download != nullptr;
 #else
     Q_UNUSED(hash);
     Q_UNUSED(savePath);
+    Q_UNUSED(initiallyPaused);
     return false;
 #endif
 }
@@ -216,6 +229,7 @@ TorrentMetadata TorrentEngine::readTorrentFile(const QString& torrentFile) const
 bool TorrentEngine::addTorrentFile(const QString& torrentFile, const QString& savePath)
 {
 #ifdef RATS_SEARCH_FEATURES
+    if (!fileDownloadAllowed_) return false;
     auto* c = client();
     if (!c) {
         return false;
@@ -330,6 +344,7 @@ SeedResult TorrentEngine::createAndSeed(const QString& path, const QStringList& 
 {
     SeedResult result;
 #ifdef RATS_SEARCH_FEATURES
+    if (!fileUploadAllowed_) return result;
     auto* c = client();
     if (!c) {
         qWarning() << "TorrentEngine: BitTorrent client not available";

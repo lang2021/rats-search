@@ -110,6 +110,8 @@ public:
 
     // --- Configuration ------------------------------------------------------
     void setDefaultDownloadPath(const QString& path);
+    /// Stop tasks that no longer have a permitted transfer direction.
+    void enforceFileTransferPermissions();
 
     // --- Session persistence (delegated to TorrentSessionStore) -------------
     bool saveSession(const QString& filePath);

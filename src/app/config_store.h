@@ -74,6 +74,10 @@ public:
     void setNetworkEnabled(bool enabled);
     bool resumeBtSession() const;
     void setResumeBtSession(bool enabled);
+    bool btFileDownloadEnabled() const;
+    void setBtFileDownloadEnabled(bool enabled);
+    bool btFileUploadEnabled() const;
+    void setBtFileUploadEnabled(bool enabled);
     bool mdnsEnabled() const;
     void setMdnsEnabled(bool enabled);
     bool indexExchangeEnabled() const;

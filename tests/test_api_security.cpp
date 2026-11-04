@@ -13,6 +13,7 @@
 #include <QWebSocket>
 #include "app/application.h"
 #include "app/config_store.h"
+#include "net/torrent_engine.h"
 #include "rest/api_router.h"
 #include "rest/api_server.h"
 
@@ -27,6 +28,7 @@ private slots:
     void testFilePathsRequireExplicitRoot();
     void testNoFileRootByDefault();
     void testAuthorizedTorrentFileCreationWithoutP2p();
+    void testBtTransferDeniedWithoutPermission();
     void testTraversalAndSymlinks();
     void testWebSocketRequiresTokenAndChecksPaths();
     void testEventsOnlyReachAuthenticatedWebSockets();
@@ -258,6 +260,33 @@ void TestApiSecurity::testAuthorizedTorrentFileCreationWithoutP2p()
     QVERIFY(torrent.size() > 0);
     QCOMPARE(torrent.read(1), QByteArray("d"));
     api.stop();
+}
+
+void TestApiSecurity::testBtTransferDeniedWithoutPermission()
+{
+    QTemporaryDir data;
+    QVERIFY(data.isValid());
+    rats::app::Application::Options options;
+    options.dataDirectory = data.path();
+    options.headless = true;
+    rats::app::Application app(options); // No P2P sockets are started.
+    rats::rest::ApiRouter router(&app);
+
+    const QString hash(40, QLatin1Char('a'));
+    const auto denied = [&router](const QString& method, const QJsonObject& params) {
+        bool called = false;
+        rats::Result result;
+        router.call(method, params, [&](const rats::Result& value) {
+            called = true;
+            result = value;
+        });
+        return called && !result.ok() && result.error().contains("disabled");
+    };
+    app.engine()->setFileTransferPermissions(false, true);
+    QVERIFY(denied("download.add", { { "hash", hash } }));
+    QVERIFY(denied("download.addFile", { { "path", data.path() + "/source.torrent" } }));
+    app.engine()->setFileTransferPermissions(true, false);
+    QVERIFY(denied("torrent.create", { { "path", data.path() + "/source.txt" }, { "seed", true } }));
 }
 
 void TestApiSecurity::testFilePathsRequireExplicitRoot()

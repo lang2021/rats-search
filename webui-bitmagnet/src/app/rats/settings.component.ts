@@ -7,6 +7,8 @@ import { ratsCall } from "./rats-api";
 type Config = {
   networkEnabled: boolean;
   resumeBtSession: boolean;
+  btFileDownload: boolean;
+  btFileUpload: boolean;
   mdns: boolean;
   indexExchange: boolean;
   remoteSearch: boolean;
@@ -28,6 +30,9 @@ type FeatureStatus = {
   mdnsRunning: boolean;
   p2pRunning: boolean;
   btEngineReady: boolean;
+  btFileDownloadAllowed: boolean;
+  btFileUploadAllowed: boolean;
+  btSessionRestoreDesired: boolean;
   crawlerRunning: boolean;
   replicationRunning: boolean;
   databaseSharingRunning: boolean;
@@ -71,10 +76,15 @@ type FeatureStatus = {
           <mat-checkbox [(ngModel)]="c.remoteSearch">向 Rats 节点发送搜索词（桌面客户端）</mat-checkbox>
           <p>与索引共享授权独立；仅桌面客户端的关键词搜索会广播到已连接节点。当前 Web 搜索仍只查询本地索引。关闭此项不影响本地搜索或按哈希发起的 DHT 查询。</p>
         </section>
+        <section class="module-control" aria-label="BT 文件传输">
+          <mat-checkbox [(ngModel)]="c.btFileDownload">允许 BT 资源文件下载</mat-checkbox>
+          <mat-checkbox [(ngModel)]="c.btFileUpload">允许 BT 文件块上传与做种</mat-checkbox>
+          <p>两项权限独立；上传包含下载过程中已获得的文件块。关闭权限会停止对应方向的传输，不影响 DHT 元数据采集。<span *ngIf="status as s">当前：下载 {{ s.btFileDownloadAllowed ? '允许' : '禁止' }}，上传 {{ s.btFileUploadAllowed ? '允许' : '禁止' }}。</span></p>
+        </section>
         <div class="options">
           <mat-checkbox [(ngModel)]="c.networkEnabled">网络总闸（过渡控制，开启需重启）</mat-checkbox>
           <mat-checkbox [(ngModel)]="c.safeSearch">安全搜索</mat-checkbox>
-          <mat-checkbox [(ngModel)]="c.resumeBtSession">保存并恢复 BT 下载与做种会话</mat-checkbox>
+          <mat-checkbox [(ngModel)]="c.resumeBtSession">重启后自动恢复 BT 任务（仍受下载和上传授权约束）</mat-checkbox>
           <mat-checkbox [(ngModel)]="c.mdns">局域网 mDNS 广播（重启生效）</mat-checkbox>
           <mat-checkbox [(ngModel)]="c.indexer">DHT 索引爬取</mat-checkbox>
         </div>
@@ -143,11 +153,13 @@ export class SettingsComponent implements OnInit {
     this.confirming = false;
     this.saving = true;
     try {
-      const { networkEnabled, resumeBtSession, mdns, indexExchange, remoteSearch, safeSearch, indexer, databaseSharing, p2pReplication, p2pReplicationServer } =
+      const { networkEnabled, resumeBtSession, btFileDownload, btFileUpload, mdns, indexExchange, remoteSearch, safeSearch, indexer, databaseSharing, p2pReplication, p2pReplicationServer } =
         this.config;
       await ratsCall("config.set", {
         networkEnabled,
         resumeBtSession,
+        btFileDownload,
+        btFileUpload,
         mdns,
         indexExchange,
         remoteSearch,

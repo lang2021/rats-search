@@ -29,6 +29,7 @@ private slots:
     void networkGate_defaultsOffAndPersists();
     void legacyNetworkDefaultsAreNotConsent();
     void indexModulePreferencePersists();
+    void btFilePermissionsAreIndependentAndPersist();
 
 private:
     QTemporaryDir* dir_ = nullptr;
@@ -66,6 +67,8 @@ void TestConfigStore::networkGate_defaultsOffAndPersists()
 {
     QVERIFY(!config_->networkEnabled());
     QVERIFY(!config_->resumeBtSession());
+    QVERIFY(!config_->btFileDownloadEnabled());
+    QVERIFY(!config_->btFileUploadEnabled());
     QVERIFY(!config_->mdnsEnabled());
     QVERIFY(!config_->indexExchangeEnabled());
     QVERIFY(!config_->databaseSharing());
@@ -75,6 +78,8 @@ void TestConfigStore::networkGate_defaultsOffAndPersists()
     QVERIFY(loaded.load());
     QVERIFY(loaded.networkEnabled());
     QVERIFY(!loaded.resumeBtSession());
+    QVERIFY(!loaded.btFileDownloadEnabled());
+    QVERIFY(!loaded.btFileUploadEnabled());
     QVERIFY(!loaded.mdnsEnabled());
     QVERIFY(!loaded.indexExchangeEnabled());
 }
@@ -241,6 +246,28 @@ void TestConfigStore::saveThenLoad_roundTrips()
     QVERIFY(reloaded.load());
     QCOMPARE(reloaded.filtersSizeMin(), 1024LL);
     QCOMPARE(reloaded.downloadPath(), QStringLiteral("/tmp/rats-downloads"));
+}
+
+void TestConfigStore::btFilePermissionsAreIndependentAndPersist()
+{
+    QSignalSpy spy(config_, &ConfigStore::configChanged);
+    config_->setBtFileDownloadEnabled(true);
+    QVERIFY(config_->btFileDownloadEnabled());
+    QVERIFY(!config_->btFileUploadEnabled());
+    QVERIFY(!config_->resumeBtSession());
+    QCOMPARE(spy.at(0).at(0).toStringList(), QStringList { "btFileDownload" });
+
+    config_->fromJson(QJsonObject { { "btFileDownload", false }, { "btFileUpload", true } });
+    QVERIFY(!config_->btFileDownloadEnabled());
+    QVERIFY(config_->btFileUploadEnabled());
+    QVERIFY(!config_->resumeBtSession());
+    QVERIFY(config_->save());
+
+    ConfigStore loaded(path_);
+    QVERIFY(loaded.load());
+    QVERIFY(!loaded.btFileDownloadEnabled());
+    QVERIFY(loaded.btFileUploadEnabled());
+    QVERIFY(!loaded.resumeBtSession());
 }
 
 QTEST_MAIN(TestConfigStore)
