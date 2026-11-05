@@ -12,6 +12,7 @@
 #include "app/application.h"
 #include "app/config_store.h"
 #include "data/torrent_repository.h"
+#include "net/crawler.h"
 #include "net/p2p_transport.h"
 #include "services/download_service.h"
 
@@ -22,6 +23,7 @@
 #undef slots
 #undef signals
 #include "librats/node/node.h"
+#include "librats/dht/krpc.h"
 #include "librats/subsystems/message_json.h"
 #pragma pop_macro("signals")
 #pragma pop_macro("slots")
@@ -110,7 +112,11 @@ private slots:
         QCOMPARE(token.size(), 64);
         QCOMPARE(post(http, token, "network.start", false).status, 401);
         QCOMPARE(post(http, token, "network.stop", false).status, 401);
+        QCOMPARE(post(http, token, "crawler.start", false).status, 401);
         QCOMPARE(post(http, token, "network.start", true, true).status, 405);
+        QCOMPARE(post(http, token, "crawler.start", true, true).status, 405);
+        QVERIFY(!post(http, token, "crawler.start").body["success"].toBool());
+        QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("failed"));
 
         for (int cycle = 0; cycle < 2; ++cycle) {
             const Reply started = post(http, token, "network.start");
@@ -120,7 +126,18 @@ private slots:
             QVERIFY(app.transport()->isRunning());
             QVERIFY(app.transport()->isDhtRunning());
             QVERIFY(!app.featureStatus()["crawlerRunning"].toBool());
+            QVERIFY(app.featureStatus()["crawlerLastError"].toString().isEmpty());
             QCOMPARE(post(http, token, "search.torrents").status, 200);
+
+            const Reply collecting = post(http, token, "crawler.start");
+            QVERIFY(collecting.body["success"].toBool());
+            QCOMPARE(collecting.body["data"].toObject()["crawlerState"].toString(), QStringLiteral("running"));
+            QVERIFY(!app.featureStatus()["crawlerConfigured"].toBool());
+            const Reply collectionStopped = post(http, token, "crawler.stop");
+            QVERIFY(collectionStopped.body["success"].toBool());
+            QCOMPARE(collectionStopped.body["data"].toObject()["crawlerState"].toString(), QStringLiteral("stopped"));
+            QVERIFY(app.transport()->isDhtRunning());
+            QVERIFY(post(http, token, "crawler.start").body["success"].toBool());
 
             if (cycle == 0) {
                 // These fixture hashes have no peers or content. A stopped task
@@ -169,6 +186,7 @@ private slots:
                 QCOMPARE(stopped.body["data"].toObject()["networkState"].toString(), QStringLiteral("stopped"));
             }
             QVERIFY(!app.transport()->isRunning());
+            QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("stopped"));
             QVERIFY(!app.engine()->fileDownloadAllowed());
             QVERIFY(!app.engine()->fileUploadAllowed());
             QCOMPARE(app.downloads()->allDownloads().size(), 2);
@@ -195,7 +213,73 @@ private slots:
         QVERIFY(retried.body["success"].toBool());
         QVERIFY(app.featureStatus()["lastError"].toString().isEmpty());
         for (const auto& entry : app.downloads()->allDownloads()) QVERIFY(entry.paused);
+
+        // A local-only announce produces a real BEP 9 request with no serving
+        // peer. Stopping collection must drain that request without indexing it.
+        for (int i = 0; i < 3; ++i) {
+            QVERIFY(post(http, token, "crawler.start").body["success"].toBool());
+            QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("running"));
+            QVERIFY(post(http, token, "crawler.stop").body["success"].toBool());
+            QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("stopped"));
+        }
+        QVERIFY(post(http, token, "crawler.start").body["success"].toBool());
+        QUdpSocket announcer;
+        QVERIFY(announcer.bind(QHostAddress::LocalHost, 0));
+        librats::NodeId senderId{};
+        senderId.fill(0x42);
+        librats::InfoHash announcedHash{};
+        announcedHash.fill(0x73);
+        const auto announce = librats::KrpcProtocol::encode_message(
+            librats::KrpcProtocol::create_announce_peer_query(
+                "t1", senderId, announcedHash, announcer.localPort(), "", true));
+        QCOMPARE(announcer.writeDatagram(reinterpret_cast<const char*>(announce.data()),
+                     static_cast<qint64>(announce.size()), QHostAddress::LocalHost, dht),
+            static_cast<qint64>(announce.size()));
+        QTRY_VERIFY_WITH_TIMEOUT(app.crawler()->pendingFetches() > 0, 3000);
+        const Reply draining = post(http, token, "crawler.stop");
+        QVERIFY(draining.body["success"].toBool());
+        QCOMPARE(draining.body["data"].toObject()["crawlerState"].toString(), QStringLiteral("stopping"));
+        QVERIFY(!post(http, token, "crawler.start").body["success"].toBool());
+        QCOMPARE(app.torrents()->statistics().torrents, 0);
         QVERIFY(post(http, token, "network.stop").body["success"].toBool());
+        QTRY_COMPARE_WITH_TIMEOUT(app.crawler()->pendingFetches(), 0, 3000);
+        QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("stopped"));
+        QCOMPARE(app.torrents()->statistics().torrents, 0);
+        app.stop();
+    }
+
+    void spiderCliOverridesStartupPreferenceButNotManualStop()
+    {
+        if (!qEnvironmentVariableIsSet("RATS_LOOPBACK_SANDBOX"))
+            QSKIP("Run only under an outbound-denying loopback sandbox");
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        rats::app::ConfigStore config(data.path() + "/rats.json");
+        config.setNetworkEnabled(false);
+        config.setIndexerEnabled(false);
+        config.setTrackersEnabled(false);
+        config.setP2pPort(freeTcpPort());
+        QVERIFY(config.save());
+
+        rats::app::Application::Options options;
+        options.dataDirectory = data.path();
+        options.clientVersion = QStringLiteral("test");
+        options.headless = true;
+        options.forceSpider = true;
+        options.dhtPort = freeTcpPort();
+        rats::app::Application app(options);
+        QVERIFY(app.start());
+        QCOMPARE(app.featureStatus()["networkState"].toString(), QStringLiteral("stopped"));
+        QVERIFY(app.startNetwork());
+        QVERIFY(app.featureStatus()["crawlerForcedByCli"].toBool());
+        QVERIFY(!app.featureStatus()["crawlerConfigured"].toBool());
+        QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("running"));
+        QVERIFY(app.stopCrawler());
+        QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("stopped"));
+        QVERIFY(app.transport()->isDhtRunning());
+        QVERIFY(app.stopNetwork());
+        QVERIFY(app.startNetwork());
+        QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("running"));
         app.stop();
     }
 };

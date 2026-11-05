@@ -1107,6 +1107,17 @@ void ApiRouter::registerMethods()
         respond(ok ? Result::success(app_->featureStatus())
                    : Result::failure(QStringLiteral("Network stop is busy or on the wrong thread")));
     });
+    add("crawler.start", [this](const QJsonObject&, const ResultCallback& respond) {
+        const bool ok = app_->startCrawler();
+        const QJsonObject status = app_->featureStatus();
+        respond(ok ? Result::success(status)
+                   : Result::failure(status["crawlerLastError"].toString().isEmpty()
+                         ? QStringLiteral("Crawler start is unavailable") : status["crawlerLastError"].toString()));
+    });
+    add("crawler.stop", [this](const QJsonObject&, const ResultCallback& respond) {
+        respond(app_->stopCrawler() ? Result::success(app_->featureStatus())
+                                   : Result::failure(QStringLiteral("Crawler stop is unavailable")));
+    });
 
     // -----------------------------------------------------------------------
     // Statistics & peers

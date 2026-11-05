@@ -1,8 +1,10 @@
-import { Component, OnInit } from "@angular/core";
+import { Component, ElementRef, OnDestroy, OnInit, ViewChild } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { AppModule } from "../app.module";
 import { DocumentTitleComponent } from "../layout/document-title.component";
-import { ratsCall } from "./rats-api";
+import { ratsAuthToken, ratsCall } from "./rats-api";
+
+type RuntimeAction = "start-network" | "stop-network" | "start-crawler" | "stop-crawler";
 
 type Config = {
   networkEnabled: boolean;
@@ -26,6 +28,7 @@ type Config = {
 type FeatureStatus = {
   networkDesired: boolean;
   networkRunning: boolean;
+  networkState: "stopped" | "starting" | "running" | "stopping" | "failed";
   restartRequired: boolean;
   dhtRunning: boolean;
   independentDirectSupported: boolean;
@@ -38,6 +41,12 @@ type FeatureStatus = {
   btFileUploadAllowed: boolean;
   btSessionRestoreDesired: boolean;
   crawlerRunning: boolean;
+  crawlerState: "stopped" | "starting" | "running" | "stopping" | "failed";
+  crawlerPendingFetches: number;
+  crawlerConfigured: boolean;
+  crawlerForcedByCli: boolean;
+  crawlerOverrideActive: boolean;
+  crawlerLastError: string;
   replicationRunning: boolean;
   databaseSharingRunning: boolean;
   indexExchangeRunning: boolean;
@@ -62,24 +71,32 @@ type FeatureStatus = {
       >
       <mat-card-content *ngIf="config as c">
         <div class="status-strip" *ngIf="status as s" aria-label="当前运行状态">
-          <span>网络 {{ s.networkRunning ? '运行中' : '已停止' }}</span>
+          <span>网络 {{ networkStateLabel(s.networkState) }}</span>
           <span>DHT {{ s.dhtRunning ? '运行中' : '已停止' }}</span>
+          <span>采集 {{ crawlerStateLabel(s.crawlerState) }}</span>
           <span>Rats P2P {{ s.p2pRunning ? '运行中' : '已停止' }}</span>
           <span *ngIf="s.restartRequired" class="attention">有设置待重启</span>
           <span *ngIf="edited" class="attention">有未保存修改</span>
+          <span *ngIf="runtimeBusy" class="attention">正在执行网络操作</span>
         </div>
         <p *ngIf="status?.lastError" class="attention">启动错误：{{ status?.lastError }}</p>
+        <p *ngIf="status?.crawlerLastError" class="attention">采集错误：{{ status?.crawlerLastError }}</p>
 
         <mat-accordion class="settings-groups" multi>
           <mat-expansion-panel class="settings-panel" expanded>
             <mat-expansion-panel-header>
               <mat-panel-title>01 共享网络基础</mat-panel-title>
-              <mat-panel-description>联网总闸与当前运行状态</mat-panel-description>
+              <mat-panel-description>当前运行与下次启动偏好</mat-panel-description>
             </mat-expansion-panel-header>
             <div class="setting-row">
-              <mat-checkbox [(ngModel)]="c.networkEnabled" (ngModelChange)="markEdited()">启用网络功能</mat-checkbox>
-              <p class="hint">关闭后立即停止 DHT、Rats P2P 和 BT 网络；重新开启需重启。此项不会自动授权对外共享或文件传输。</p>
-              <p class="state" *ngIf="status as s">配置 {{ c.networkEnabled ? '开启' : '关闭' }} · 实际 {{ s.networkRunning ? '运行中' : '已停止' }}<span *ngIf="s.restartRequired"> · 待重启</span></p>
+              <div class="runtime-actions" *ngIf="status as s">
+                <button mat-flat-button color="primary" (click)="requestRuntime('start-network')" [disabled]="runtimeDisabled || s.networkState === 'running' || s.networkState === 'starting' || s.networkState === 'stopping'">启动网络</button>
+                <button mat-stroked-button (click)="requestRuntime('stop-network')" [disabled]="runtimeDisabled || s.networkState !== 'running'">停止网络</button>
+                <span role="status">当前网络：{{ networkStateLabel(s.networkState) }}</span>
+              </div>
+              <mat-checkbox [(ngModel)]="c.networkEnabled" (ngModelChange)="markEdited()">下次启动程序时自动启用共享网络</mat-checkbox>
+              <p class="hint">此项是启动偏好，保存后不启停当前网络。启动共享网络不会自动授权文件传输、远程搜索或对外索引共享。</p>
+              <p class="state" *ngIf="status as s">已保存偏好 {{ s.networkDesired ? '开启' : '关闭' }} · 当前 {{ networkStateLabel(s.networkState) }}<span *ngIf="s.restartRequired"> · 有启动配置待重新启动网络</span></p>
             </div>
             <mat-expansion-panel class="advanced-panel">
               <mat-expansion-panel-header>
@@ -105,12 +122,17 @@ type FeatureStatus = {
           <mat-expansion-panel class="settings-panel">
             <mat-expansion-panel-header>
               <mat-panel-title>02 DHT 资源采集</mat-panel-title>
-              <mat-panel-description>发现网络与元数据采集分开显示</mat-panel-description>
+              <mat-panel-description>采集运行与下次启动偏好</mat-panel-description>
             </mat-expansion-panel-header>
             <div class="setting-row">
-              <mat-checkbox [(ngModel)]="c.indexer" (ngModelChange)="markEdited()">采集 DHT 资源元数据</mat-checkbox>
-              <p class="hint">关闭采集任务不等于关闭 DHT 节点网络；元数据获取不下载资源文件。</p>
-              <p class="state" *ngIf="status as s">配置 {{ c.indexer ? '开启' : '关闭' }} · DHT 网络 {{ s.dhtRunning ? '运行中' : '已停止' }} · 采集任务 {{ s.crawlerRunning ? '运行中' : '已停止' }}</p>
+              <div class="runtime-actions" *ngIf="status as s">
+                <button mat-flat-button color="primary" (click)="requestRuntime('start-crawler')" [disabled]="runtimeDisabled || s.crawlerState === 'running' || s.crawlerState === 'stopping'">启动采集</button>
+                <button mat-stroked-button (click)="requestRuntime('stop-crawler')" [disabled]="runtimeDisabled || s.crawlerState !== 'running'">停止采集</button>
+                <span role="status">采集：{{ crawlerStateLabel(s.crawlerState) }}</span>
+              </div>
+              <mat-checkbox [(ngModel)]="c.indexer" (ngModelChange)="markEdited()">下次启动共享网络时自动采集</mat-checkbox>
+              <p class="hint">保存偏好不会启停本次采集。停止采集后，共享网络与 DHT Socket 仍可运行；BEP 9 元数据获取不下载资源文件。</p>
+              <p class="state" *ngIf="status as s">已保存偏好 {{ s.crawlerConfigured ? '开启' : '关闭' }} · DHT Socket {{ s.dhtRunning ? '运行中' : '已停止' }} · 采集 {{ crawlerStateLabel(s.crawlerState) }}<span *ngIf="s.crawlerState === 'stopping'">（{{ s.crawlerPendingFetches }} 个元数据请求待结束，期间可能仍有网络通信）</span><span *ngIf="s.crawlerForcedByCli"> · --spider 会在下次启动网络时启用采集</span><span *ngIf="s.crawlerOverrideActive"> · 本次运行已手动控制</span></p>
             </div>
           </mat-expansion-panel>
 
@@ -169,6 +191,11 @@ type FeatureStatus = {
         </mat-accordion>
 
         <p *ngIf="message" role="status">{{ message }}</p>
+        <dialog *ngIf="pendingRuntime as action" #runtimeDialog class="runtime-confirm" aria-label="确认网络操作" (cancel)="$event.preventDefault(); cancelRuntime()">
+          <span>{{ action.prompt }}</span>
+          <button mat-flat-button color="primary" autofocus (click)="confirmRuntime()">确认操作</button>
+          <button mat-button (click)="cancelRuntime()">取消</button>
+        </dialog>
         <button
           mat-flat-button
           color="primary"
@@ -178,7 +205,7 @@ type FeatureStatus = {
           保存设置
         </button>
         <span *ngIf="confirming" class="confirm" role="group" aria-label="确认保存设置">
-          确认保存？网络关闭会立即停止相关网络活动；开启网络、mDNS 或 DHT 直连需重启。对外已发送的数据无法撤回；关闭索引共享仍保留子授权勾选值。
+          确认保存？网络与采集启动偏好不会启停本次服务；其他权限可能立即生效。mDNS 或 DHT 直连需重新启动网络；关闭索引共享仍保留子授权勾选值。
           <button mat-flat-button color="primary" (click)="save()" [disabled]="saving">确认保存</button>
           <button mat-button (click)="confirming = false" [disabled]="saving">取消</button>
         </span>
@@ -206,6 +233,10 @@ type FeatureStatus = {
       .settings-panel mat-panel-title { color: var(--rs-accent); font-size: 11px; letter-spacing: .15em; }
       .settings-panel mat-panel-description { color: var(--rs-muted); font-size: 11px; }
       .setting-row { padding: 8px 0; border-top: 1px solid var(--rs-border); }
+      .runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--rs-text); }
+      .runtime-confirm { box-sizing: border-box; width: min(460px,calc(100% - 32px)); padding: 18px; border: 1px solid var(--rs-accent); background: var(--rs-surface); color: var(--rs-text); }
+      .runtime-confirm::backdrop { background: rgba(0,0,0,.7); }
+      .runtime-confirm span { display: block; margin-bottom: 16px; line-height: 1.6; }
       .setting-row:first-child { border-top: 0; }
       .setting-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 16px; }
       .setting-grid > mat-checkbox { padding: 8px 0; }
@@ -221,13 +252,80 @@ type FeatureStatus = {
     `,
   ],
 })
-export class SettingsComponent implements OnInit {
+export class SettingsComponent implements OnInit, OnDestroy {
+  @ViewChild("runtimeDialog") runtimeDialog?: ElementRef<HTMLDialogElement>;
   config?: Config;
   status?: FeatureStatus;
   message = "";
   saving = false;
   confirming = false;
   edited = false;
+  pendingRuntime?: { action: RuntimeAction; prompt: string };
+  runtimeBusy?: RuntimeAction;
+  private statusPoll?: ReturnType<typeof setInterval>;
+
+  get runtimeDisabled(): boolean {
+    return this.saving || this.confirming || !!this.pendingRuntime || !!this.runtimeBusy;
+  }
+
+  networkStateLabel(state: FeatureStatus["networkState"]): string {
+    return ({ stopped: "已停止", starting: "正在启动", running: "运行中", stopping: "正在停止", failed: "启动失败" })[state];
+  }
+
+  crawlerStateLabel(state: FeatureStatus["crawlerState"]): string {
+    return ({ stopped: "已停止", starting: "正在启动", running: "运行中", stopping: "正在停止", failed: "启动失败" })[state];
+  }
+
+  requestRuntime(action: RuntimeAction): void {
+    if (!this.status || this.runtimeDisabled) return;
+    const prompt = action === "start-network"
+      ? "启动共享网络会打开 DHT、Rats P2P 和 BT 底层，并可能进行 DHT Bootstrap、STUN、PEX 与已知节点重连。不会改变文件传输、远程搜索或对外共享授权。确认启动？"
+      : action === "stop-network"
+        ? "停止共享网络将停止 DHT、Rats P2P、BT 连接及相关任务；本地数据库和搜索保持可用。确认停止？"
+        : action === "start-crawler" && !this.status.networkRunning
+          ? "采集需要共享网络。确认先启动共享网络，再启动采集？启动网络可能进行 DHT Bootstrap、STUN、PEX 与已知节点重连；不会改变文件传输或对外共享授权。"
+          : undefined;
+    if (prompt) {
+      this.pendingRuntime = { action, prompt };
+      setTimeout(() => this.runtimeDialog?.nativeElement.showModal(), 0);
+    } else {
+      void this.performRuntime(action);
+    }
+  }
+
+  confirmRuntime(): void {
+    if (!this.pendingRuntime) return;
+    const action = this.pendingRuntime.action;
+    this.pendingRuntime = undefined;
+    void this.performRuntime(action);
+  }
+
+  cancelRuntime(): void {
+    this.pendingRuntime = undefined;
+  }
+
+  private async performRuntime(action: RuntimeAction): Promise<void> {
+    this.runtimeBusy = action;
+    this.message = "";
+    try {
+      if (action === "start-crawler" && !this.status?.networkRunning)
+        this.status = await ratsCall<FeatureStatus>("network.start");
+      const method = ({ "start-network": "network.start", "stop-network": "network.stop", "start-crawler": "crawler.start", "stop-crawler": "crawler.stop" })[action];
+      this.status = await ratsCall<FeatureStatus>(method);
+      this.message = action === "stop-crawler" && this.status.crawlerState === "stopping"
+        ? "采集已停止接收新任务，正在等待已有元数据请求结束。"
+        : "运行操作已完成";
+    } catch (error) {
+      try { await this.refreshRuntimeStatus(); } catch { /* Keep the last known state. */ }
+      this.message = `运行操作失败：${String(error)}`;
+    } finally {
+      this.runtimeBusy = undefined;
+    }
+  }
+
+  private async refreshRuntimeStatus(): Promise<void> {
+    this.status = await ratsCall<FeatureStatus>("features.status");
+  }
 
   markEdited(): void {
     this.edited = true;
@@ -236,6 +334,14 @@ export class SettingsComponent implements OnInit {
 
   ngOnInit(): void {
     void this.load();
+    this.statusPoll = setInterval(() => {
+      if (this.config && ratsAuthToken() && !this.runtimeDisabled)
+        void this.refreshRuntimeStatus().catch(() => { /* Manual refresh reports errors. */ });
+    }, 2000);
+  }
+
+  ngOnDestroy(): void {
+    if (this.statusPoll) clearInterval(this.statusPoll);
   }
 
   async load(): Promise<void> {

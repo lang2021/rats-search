@@ -47,6 +47,8 @@ public:
     bool start();
     void stop();
     bool isRunning() const;
+    bool isStopping() const { return !running_ && pendingFetches_.load() > 0; }
+    int pendingFetches() const { return pendingFetches_.load(); }
 
     // Metrics getters
     int discoveredCount() const { return discoveredCount_.load(); }
@@ -111,6 +113,7 @@ private:
     std::atomic<uint64_t> generation_ { 0 };
     std::atomic<int> discoveredCount_;
     std::atomic<int> activeFetches_;
+    std::atomic<int> pendingFetches_ { 0 }; // includes old-generation requests draining after stop
     std::atomic<int> fetchSuccessCount_;
     std::atomic<int> fetchErrorCount_;
     std::atomic<int> visitedNodesCount_;

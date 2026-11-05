@@ -89,6 +89,8 @@ public:
     // Runtime control; independent of the persisted networkEnabled startup preference.
     bool startNetwork();
     bool stopNetwork();
+    bool startCrawler();
+    bool stopCrawler();
     QJsonObject featureStatus() const;
 
     const Options& options() const;

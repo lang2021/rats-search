@@ -48,6 +48,7 @@ struct Application::Private {
     bool downloadSessionLoaded = false;
     QString networkError;
     QString crawlerError;
+    std::optional<bool> crawlerRunOverride; // this process only; config indexer is the next-start preference
     enum class NetworkState { Stopped, Starting, Running, Stopping, Failed } networkState = NetworkState::Stopped;
 
     // Adapters (owned, constructed in dependency order)
@@ -214,21 +215,9 @@ void Application::applyConfig()
     d_->searchHistory->setEnabled(c->searchHistoryEnabled());
     d_->updates->setNetworkAllowed(network);
 
-    // Reflect runtime toggles of the crawler and replication. Only act once the
-    // subsystems are up (applyConfig also runs at construction, before start(),
-    // where start() itself does the initial launch). start()/stop() are
-    // idempotent.
+    // Replication remains configuration-driven. Crawler runtime control is
+    // separate: saving the indexer preference cannot silently start it.
     if (d_->running && network) {
-        if (c->indexerEnabled() || d_->options.forceSpider) {
-            if (!d_->crawler->start())
-                d_->crawlerError = QStringLiteral("DHT crawler could not start; check DHT and BT status");
-            else
-                d_->crawlerError.clear();
-        } else {
-            d_->crawler->stop();
-            d_->crawlerError.clear();
-        }
-
         if (c->p2pReplication())
             d_->replication->start();
         else
@@ -373,6 +362,11 @@ bool Application::startNetwork()
 
     d_->networkState = Private::NetworkState::Running;
     applyConfig(); // permissions and sharing are applied before any task is attached
+    if (d_->crawlerRunOverride.value_or(d_->config->indexerEnabled() || d_->options.forceSpider)) {
+        const auto runtimeChoice = d_->crawlerRunOverride;
+        startCrawler();
+        d_->crawlerRunOverride = runtimeChoice;
+    }
     if (!d_->downloads->reattachAfterNetworkStart())
         d_->networkError = QStringLiteral("Some paused BT tasks could not be reattached");
     d_->downloads->enableMonitoring();
@@ -390,6 +384,9 @@ bool Application::stopNetwork()
         return true;
     }
     d_->networkState = Private::NetworkState::Stopping;
+    // Runtime crawler choices belong to this network run. The next run uses
+    // the stored startup preference (and --spider, if supplied).
+    d_->crawlerRunOverride.reset();
     d_->apiRouter->cancelRemoteSearches(QStringLiteral("P2P network stopping"));
     d_->crawler->stop();
     d_->trackers->stop();
@@ -405,9 +402,40 @@ bool Application::stopNetwork()
     d_->downloadSessionLoaded = false;
     d_->engine->setFileTransferPermissions(false, false);
     d_->transport->stop();
+    // A failed retry while metadata was draining is no longer an active
+    // crawler failure once the Node has cancelled and drained its requests.
+    d_->crawlerError.clear();
     d_->updates->setNetworkAllowed(false);
     d_->networkState = Private::NetworkState::Stopped;
     qInfo() << "[Application] network features stopped; local search remains available";
+    return true;
+}
+
+bool Application::startCrawler()
+{
+    if (QThread::currentThread() != thread() || !d_->running) return false;
+    d_->crawlerError.clear();
+    if (!d_->transport->isRunning())
+        d_->crawlerError = QStringLiteral("Start the shared network before DHT collection");
+    else if (!d_->transport->isDhtRunning())
+        d_->crawlerError = QStringLiteral("DHT socket is not running");
+    else if (!d_->engine->isReady())
+        d_->crawlerError = QStringLiteral("BT metadata engine is not ready");
+    else if (d_->crawler->isStopping())
+        d_->crawlerError = QStringLiteral("Previous metadata requests are still draining");
+    else if (!d_->crawler->start())
+        d_->crawlerError = QStringLiteral("DHT crawler failed to start");
+    if (!d_->crawlerError.isEmpty()) return false;
+    d_->crawlerRunOverride = true;
+    return true;
+}
+
+bool Application::stopCrawler()
+{
+    if (QThread::currentThread() != thread() || !d_->running) return false;
+    d_->crawlerRunOverride = false;
+    d_->crawlerError.clear();
+    d_->crawler->stop();
     return true;
 }
 
@@ -441,6 +469,13 @@ QJsonObject Application::featureStatus() const
         { "btFileUploadAllowed", actual && d_->engine->fileUploadAllowed() },
         { "btSessionRestoreDesired", d_->config->resumeBtSession() },
         { "crawlerRunning", d_->crawler->isRunning() },
+        { "crawlerState", d_->crawler->isRunning() ? "running" :
+            d_->crawler->isStopping() ? "stopping" :
+            !d_->crawlerError.isEmpty() ? "failed" : "stopped" },
+        { "crawlerPendingFetches", d_->crawler->pendingFetches() },
+        { "crawlerConfigured", d_->config->indexerEnabled() },
+        { "crawlerForcedByCli", d_->options.forceSpider },
+        { "crawlerOverrideActive", d_->crawlerRunOverride.has_value() },
         { "replicationRunning", d_->replication->isRunning() },
         { "databaseSharingRunning", d_->databaseSync->sharingEnabled() },
         { "indexExchangeAllowed", d_->config->indexExchangeEnabled() },

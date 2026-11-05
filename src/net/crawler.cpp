@@ -66,6 +66,10 @@ bool Crawler::start()
     if (running_) {
         return true;
     }
+    if (pendingFetches_ > 0) {
+        qWarning() << "Crawler: previous metadata requests are still draining";
+        return false;
+    }
 
     if (!transport_) {
         qWarning() << "Crawler: P2P transport not available";
@@ -154,12 +158,11 @@ void Crawler::stop()
     if (bt) {
         bt->set_spider_mode(false);
     }
-    activeFetches_ = 0;
 #endif
 
     // Note: we never stop the BitTorrent subsystem here - the transport owns it.
 
-    emit statusChanged("Stopped");
+    emit statusChanged(pendingFetches_ > 0 ? "Stopping" : "Stopped");
 
     qInfo() << "DHT crawler stopped. Total discovered:" << discoveredCount_.load();
 }
@@ -293,6 +296,7 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
     }
 
     activeFetches_++;
+    pendingFetches_++;
     const uint64_t generation = generation_.load();
 
     const QString infoHash = request.infoHash;
@@ -303,9 +307,15 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
     // invokes this callback exactly once (success or timeout) on a worker thread.
     auto onResult = [this, infoHash, peerIp, peerPort, generation](
                         const librats::bittorrent::TorrentInfo& torrentInfo, bool success, const std::string& err) {
+        const int remaining = --pendingFetches_;
+        --activeFetches_;
+        if (remaining == 0 && !running_) {
+            QMetaObject::invokeMethod(this, [this]() {
+                if (!running_ && pendingFetches_ == 0) emit statusChanged("Stopped");
+            }, Qt::QueuedConnection);
+        }
         if (!running_ || generation != generation_)
             return;
-        activeFetches_--;
 
         if (!success || !torrentInfo.is_valid()) {
             qInfo() << "Failed to get metadata for" << infoHash.left(8) << ":" << QString::fromStdString(err);

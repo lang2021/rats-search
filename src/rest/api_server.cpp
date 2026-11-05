@@ -610,7 +610,8 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
 
     const QString method = req.path.mid(5); // strip "/api/"
     if ((method == QLatin1String("search.remote") || method == QLatin1String("search.cancel") ||
-            method == QLatin1String("network.start") || method == QLatin1String("network.stop"))
+            method == QLatin1String("network.start") || method == QLatin1String("network.stop") ||
+            method == QLatin1String("crawler.start") || method == QLatin1String("crawler.stop"))
         && req.method != "POST") {
         requestsByStatus_[405]++;
         socket->write(buildHttpResponse(405, "Method Not Allowed", "{\"error\":\"POST required\"}"));
