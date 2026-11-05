@@ -1036,7 +1036,7 @@ void MainWindow::performSearch(const QString& query)
     // Remember what the user searched for (a no-op while history is disabled).
     if (app_->searchHistory())
         app_->searchHistory()->add(query);
-    qInfo() << "Search started:" << query.left(50) << (query.length() > 50 ? "..." : "");
+    qInfo() << "Search started";
     showStatusMessage(tr("🔍 Searching..."), 2000);
 
     tabWidget->setCurrentIndex(0); // switch to Search Results

@@ -108,6 +108,8 @@ See [WebSocket Events](#websocket-events) for details.
 |--------|---------|
 | `search.torrents` | Search torrents by name (with filters; DHT fallback for info-hash queries) |
 | `search.files` | Search by file names inside torrents |
+| `search.remote` | Opt-in search of connected Rats peers (POST only) |
+| `search.cancel` | Cancel a pending remote search (POST only) |
 | `search.top` | Top torrents by seeders for a content type |
 | `search.recent` | Recently added torrents |
 | `search.history` | Recent search queries, most recent first |
@@ -165,10 +167,32 @@ GET http://localhost:8095/api/search.torrents?text=ubuntu&limit=10
 | `type` (or `contentType`) | string | | | Content type filter (e.g. `video`, `audio`, `pictures`, `books`, `software`, `games`, `archive`) |
 | `size` | object | | | Size filter in bytes, bounds inclusive: `{"min": 0, "max": 1000000000}`. `0` (or a missing key) leaves that bound unset |
 | `files` | object | | | File count filter, bounds inclusive: `{"min": 1, "max": 100}`. `0` (or a missing key) leaves that bound unset |
+| `localOnly` | bool | | `false` | Skip DHT fallback for a hash not found in the local index |
 
 **Response** - `data` is an array of torrent objects (see [Torrent Object Format](#torrent-object-format)).
 
 > **Note:** When the query is a bare 40-char info hash and nothing matches locally, a DHT/BEP 9 metadata lookup is attempted automatically; a hit is indexed and returned with `"fromDHT": true`.
+
+---
+
+#### `search.remote` - Search connected Rats peers
+
+Use an authenticated **POST** request with a JSON body. The API token belongs in
+the `Authorization: Bearer` header; the query and token must not be placed in the URL.
+
+```json
+{"searchId":"b430baf0-0fb7-4c06-b44d-33e84dca7ae3","query":"ubuntu","limit":50}
+```
+
+The `remoteSearch` permission must be enabled and at least one Rats peer must be
+connected. This action is separate from permission to provide the local index.
+The query must contain 3–200 characters. The server waits at most 2.5 seconds,
+then returns `{"items": [...], "peers": 1, "windowExpired": true}`. Results
+include their source `peer`, are deduplicated by hash, and are not automatically
+saved to the local index. Peers that do not echo the optional `searchId` in their
+responses cannot be safely associated with this request, so the Web API does not
+include those results. `search.cancel` accepts the same `searchId` in a POST JSON
+body and ends the pending request.
 
 ---
 

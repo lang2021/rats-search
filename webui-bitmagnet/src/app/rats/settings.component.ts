@@ -73,8 +73,8 @@ type FeatureStatus = {
           <p>依赖 Rats P2P，不要求向其他节点共享本地索引；关闭后停止自动拉取。手动请求完整数据库仍是单独的操作。</p>
         </section>
         <section class="module-control" aria-label="Rats 节点搜索">
-          <mat-checkbox [(ngModel)]="c.remoteSearch">向 Rats 节点发送搜索词（桌面客户端）</mat-checkbox>
-          <p>与索引共享授权独立；仅桌面客户端的关键词搜索会广播到已连接节点。当前 Web 搜索仍只查询本地索引。关闭此项不影响本地搜索或按哈希发起的 DHT 查询。</p>
+          <mat-checkbox [(ngModel)]="c.remoteSearch">允许向 Rats 节点发送搜索词</mat-checkbox>
+          <p>与索引共享授权独立。Web 搜索仍默认只查本地；选择“本地＋Rats 节点”并提交关键词后才发送。关闭此项不影响本地搜索或按哈希发起的 DHT 查询。</p>
         </section>
         <section class="module-control" aria-label="BT 文件传输">
           <mat-checkbox [(ngModel)]="c.btFileDownload">允许 BT 资源文件下载</mat-checkbox>

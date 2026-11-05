@@ -4,16 +4,20 @@
 #include "common/result.h"
 
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <functional>
+#include <memory>
 
 namespace rats::app {
 class Application;
 }
 
 namespace rats::rest {
+
+struct RemoteSearchSession;
 
 // The unified method surface of the application. A single dotted-name method
 // table (e.g. "search.torrents", "download.add", "config.set") maps names to
@@ -39,6 +43,8 @@ signals:
     void event(const QString& name, const QJsonObject& data);
 
 private:
+    void collectRemoteSearchResults(const QString& searchId, const QJsonArray& torrents);
+    bool finishRemoteSearch(const QString& searchId, const QString& error = {});
     void registerMethods();
     // Re-broadcast service-layer signals (download progress, votes, feed, config,
     // remote search hits, …) to all WebSocket clients as push events, preserving
@@ -48,6 +54,7 @@ private:
 
     app::Application* app_;
     QHash<QString, Handler> handlers_;
+    QHash<QString, std::shared_ptr<RemoteSearchSession>> remoteSearches_;
 };
 
 } // namespace rats::rest

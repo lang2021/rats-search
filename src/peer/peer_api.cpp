@@ -138,10 +138,13 @@ void PeerApi::handleSearchRequest(const QString& peerId, const QJsonObject& data
     }
 
     const QVector<domain::SearchHit> hits = app_->search()->searchTorrents(req);
-    qInfo() << "[PeerApi] search" << req.query << "->" << hits.size() << "results for" << shortId(peerId);
+    qInfo() << "[PeerApi] search ->" << hits.size() << "results for" << shortId(peerId);
 
-    for (const domain::SearchHit& hit : hits)
-        app_->transport()->sendMessage(peerId, "searchTorrent_response", domain::codec::toJson(hit.torrent));
+    for (const domain::SearchHit& hit : hits) {
+        QJsonObject result = domain::codec::toJson(hit.torrent);
+        if (data.contains("searchId")) result["searchId"] = data["searchId"];
+        app_->transport()->sendMessage(peerId, "searchTorrent_response", result);
+    }
 }
 
 void PeerApi::handleSearchFilesRequest(const QString& peerId, const QJsonObject& data)
@@ -152,7 +155,7 @@ void PeerApi::handleSearchFilesRequest(const QString& peerId, const QJsonObject&
         return;
 
     const QVector<domain::SearchHit> hits = app_->search()->searchFiles(req);
-    qInfo() << "[PeerApi] searchFiles" << req.query << "->" << hits.size() << "results for" << shortId(peerId);
+    qInfo() << "[PeerApi] searchFiles ->" << hits.size() << "results for" << shortId(peerId);
 
     for (const domain::SearchHit& hit : hits) {
         QJsonObject result = domain::codec::toJson(hit);
@@ -163,6 +166,7 @@ void PeerApi::handleSearchFilesRequest(const QString& peerId, const QJsonObject&
                 paths.append(p);
             result["path"] = paths;
         }
+        if (data.contains("searchId")) result["searchId"] = data["searchId"];
         app_->transport()->sendMessage(peerId, "searchFiles_response", result);
     }
 }
@@ -299,14 +303,12 @@ void PeerApi::handleSearchResult(const QString& peerId, const QJsonObject& data)
     QJsonObject result = data;
     result["remote"] = true;
     result["peer"] = peerId;
-    emit remoteSearchResults(QString(), QJsonArray { result });
+    emit remoteSearchResults(data["searchId"].toString(), QJsonArray { result });
 }
 
 void PeerApi::handleSearchFilesResult(const QString& peerId, const QJsonObject& data)
 {
     if (!remoteSearchAllowed()) return;
-    const QString query = data["text"].toString();
-
     QJsonObject item = data;
     item["isFileMatch"] = true;
     item["remote"] = true;
@@ -315,8 +317,8 @@ void PeerApi::handleSearchFilesResult(const QString& peerId, const QJsonObject& 
     if (data.contains("path"))
         item["matchingPaths"] = data["path"];
 
-    emit remoteFileSearchResults(query, QJsonArray { item });
-    qInfo() << "[PeerApi] file search result from" << shortId(peerId) << "for" << query;
+    emit remoteFileSearchResults(data["searchId"].toString(), QJsonArray { item });
+    qInfo() << "[PeerApi] file search result from" << shortId(peerId);
 }
 
 void PeerApi::handleTorrentResponse(const QString& peerId, const QJsonObject& data)

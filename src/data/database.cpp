@@ -26,7 +26,7 @@ Database::Rows Database::query(const QString& sql, const QVariantList& params, b
 
     QSqlDatabase db = manticore_->getDatabase();
     if (!db.isOpen() && !db.open()) {
-        qWarning() << "Database: connection not open:" << db.lastError().text() << "| SQL:" << sql.left(200);
+        qWarning() << "Database: connection not open:" << db.lastError().text();
         return rows;
     }
 
@@ -36,7 +36,8 @@ Database::Rows Database::query(const QString& sql, const QVariantList& params, b
     timer.start();
     QSqlQuery q(db);
     if (!q.exec(finalSql)) {
-        qWarning() << "Database: query failed:" << q.lastError().text() << "| SQL:" << finalSql.left(200);
+        // finalSql contains bound values such as search terms; never log it.
+        qWarning() << "Database: query failed:" << q.lastError().text();
         return rows;
     }
 
@@ -50,8 +51,7 @@ Database::Rows Database::query(const QString& sql, const QVariantList& params, b
 
     if (ok)
         *ok = true;
-    qInfo().noquote()
-        << QStringLiteral("Database: %1 rows in %2ms | %3").arg(rows.size()).arg(timer.elapsed()).arg(sql.left(120));
+    qInfo() << "Database:" << rows.size() << "rows in" << timer.elapsed() << "ms";
     return rows;
 }
 

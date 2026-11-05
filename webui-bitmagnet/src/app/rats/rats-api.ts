@@ -9,6 +9,9 @@ export type RatsTorrent = {
   leechers: number;
   contentType: string;
   contentCategory: string;
+  remote?: boolean;
+  peer?: string;
+  isFileMatch?: boolean;
 };
 
 type RatsEnvelope<T> = {

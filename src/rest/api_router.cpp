@@ -50,6 +50,7 @@
 #include <QRegularExpression>
 #include <QStringList>
 #include <QTimer>
+#include <QUuid>
 #include <memory>
 
 namespace rats::rest {
@@ -230,6 +231,57 @@ void peerLookup(ApiRouter* ctx, app::Application* app, const QString& peerId, co
 // ApiRouter
 // ===========================================================================
 
+struct RemoteSearchSession {
+    QTimer* timer = nullptr;
+    ResultCallback respond;
+    QJsonArray results;
+    QHash<QString, int> positions;
+    int peers = 0;
+};
+
+void ApiRouter::collectRemoteSearchResults(const QString& searchId, const QJsonArray& torrents)
+{
+    auto session = remoteSearches_.value(searchId);
+    if (!session) return; // Includes replies from older peers without a request ID.
+
+    for (const QJsonValue& value : torrents) {
+        QJsonObject item = value.toObject();
+        const QString hash = infohash::normalize(item["hash"].toString());
+        if (!infohash::isValid(hash)) continue;
+        item["hash"] = hash;
+        item.remove("searchId");
+        item.remove("query");
+        item.remove("text");
+
+        auto existing = session->positions.constFind(hash);
+        if (existing != session->positions.constEnd()) {
+            // Prefer a full torrent-name match over a file-only match.
+            if (session->results.at(existing.value()).toObject()["isFileMatch"].toBool()
+                && !item["isFileMatch"].toBool())
+                session->results.replace(existing.value(), item);
+            continue;
+        }
+        if (session->results.size() >= 100) continue;
+        session->positions.insert(hash, session->results.size());
+        session->results.append(item);
+    }
+}
+
+bool ApiRouter::finishRemoteSearch(const QString& searchId, const QString& error)
+{
+    auto session = remoteSearches_.take(searchId);
+    if (!session) return false;
+    session->timer->stop();
+    session->timer->deleteLater();
+    if (!error.isEmpty()) {
+        session->respond(Result::failure(error));
+    } else {
+        session->respond(Result::success(QJsonObject {
+            { "items", session->results }, { "peers", session->peers }, { "windowExpired", true } }));
+    }
+    return true;
+}
+
 ApiRouter::ApiRouter(app::Application* app, QObject* parent) : QObject(parent), app_(app)
 {
     registerMethods();
@@ -278,17 +330,30 @@ void ApiRouter::wireEvents()
         emit event(QStringLiteral("feedUpdated"), QJsonObject { { "feed", app_->feed()->toJsonArray() } });
     });
     connect(app_->config(), &app::ConfigStore::configChanged, this, [this](const QStringList& changedKeys) {
+        if (!app_->config()->remoteSearchEnabled()) {
+            for (const QString& id : remoteSearches_.keys())
+                finishRemoteSearch(id, QStringLiteral("Remote search permission disabled"));
+        }
         QJsonObject data = app_->config()->toJson();
         data["changedKeys"] = QJsonArray::fromStringList(changedKeys);
         emit event(QStringLiteral("configChanged"), data);
     });
     if (app_->peerApi()) {
         connect(app_->peerApi(), &peer::PeerApi::remoteSearchResults, this,
-            [this](const QString& query, const QJsonArray& torrents) {
+            [this](const QString& searchId, const QJsonArray& torrents) {
+                collectRemoteSearchResults(searchId, torrents);
                 emit event(QStringLiteral("remoteSearchResults"),
-                    QJsonObject { { "searchId", query }, { "torrents", torrents } });
+                    QJsonObject { { "searchId", searchId }, { "torrents", torrents } });
+            });
+        connect(app_->peerApi(), &peer::PeerApi::remoteFileSearchResults, this,
+            [this](const QString& searchId, const QJsonArray& torrents) {
+                collectRemoteSearchResults(searchId, torrents);
             });
     }
+    connect(app_->transport(), &net::P2PTransport::stopped, this, [this]() {
+        for (const QString& id : remoteSearches_.keys())
+            finishRemoteSearch(id, QStringLiteral("P2P network stopped"));
+    });
     if (app_->databaseSync()) {
         // Two lanes, two event families. databaseSync* is the local user's own
         // operation; databaseServe* is what we are doing for other peers, which a
@@ -331,6 +396,66 @@ void ApiRouter::registerMethods()
     // -----------------------------------------------------------------------
     // Search
     // -----------------------------------------------------------------------
+    add("search.remote", [this](const QJsonObject& params, const ResultCallback& respond) {
+        net::P2PTransport* transport = app_->transport();
+        if (!app_->config()->remoteSearchEnabled()) {
+            respond(Result::failure("Remote search permission disabled"));
+            return;
+        }
+        if (!transport || !transport->isRunning()) {
+            respond(Result::failure("P2P network unavailable"));
+            return;
+        }
+        if (transport->peerCount() == 0) {
+            respond(Result::failure("No connected Rats peers"));
+            return;
+        }
+        const QString query = queryText(params).trimmed();
+        if (query.size() < 3 || query.size() > 200) {
+            respond(Result::failure("Remote search query must be 3-200 characters"));
+            return;
+        }
+        const QString searchId = params["searchId"].toString();
+        if (searchId.size() > 64 || QUuid(searchId).isNull() || remoteSearches_.contains(searchId)) {
+            respond(Result::failure("Invalid or duplicate remote search ID"));
+            return;
+        }
+        if (remoteSearches_.size() >= 8) {
+            respond(Result::failure("Too many remote searches in progress"));
+            return;
+        }
+
+        auto session = std::make_shared<RemoteSearchSession>();
+        session->respond = respond;
+        session->peers = transport->peerCount();
+        session->timer = new QTimer(this);
+        session->timer->setSingleShot(true);
+        connect(session->timer, &QTimer::timeout, this,
+            [this, searchId]() { finishRemoteSearch(searchId); });
+        remoteSearches_.insert(searchId, session);
+        session->timer->start(2500);
+
+        QJsonObject message {
+            { "searchId", searchId }, { "query", query }, { "text", query },
+            { "limit", qBound(1, params["limit"].toInt(50), 50) },
+            { "orderBy", params["sort"].toString() },
+            { "orderDesc", params["orderDesc"].toBool(true) },
+            { "safeSearch", params["safeSearch"].toBool(false) },
+            { "type", params["contentType"].toString() }
+        };
+        if (params.contains("size")) message["size"] = params["size"];
+        if (params.contains("files")) message["files"] = params["files"];
+        const int sent = transport->broadcastMessage("searchTorrent", message);
+        if (sent > 0) transport->broadcastMessage("searchFiles", message);
+        else finishRemoteSearch(searchId, QStringLiteral("No connected Rats peers"));
+    });
+
+    add("search.cancel", [this](const QJsonObject& params, const ResultCallback& respond) {
+        const bool cancelled = finishRemoteSearch(params["searchId"].toString(),
+            QStringLiteral("Remote search cancelled"));
+        respond(Result::success(QJsonObject { { "cancelled", cancelled } }));
+    });
+
     add("search.torrents", [this](const QJsonObject& params, const ResultCallback& respond) {
         const service::SearchService::Request req = buildSearchRequest(params);
         // A torrent search through the API is a user-initiated search, so it is
@@ -347,7 +472,7 @@ void ApiRouter::registerMethods()
         // An info-hash query (bare hash or magnet link) with no local hit falls
         // back to a DHT lookup on the extracted, normalized hash.
         const QString dhtHash = service::SearchService::extractInfoHash(req.query);
-        if (hits.isEmpty() && !dhtHash.isEmpty()) {
+        if (hits.isEmpty() && !dhtHash.isEmpty() && !params["localOnly"].toBool(false)) {
             dhtLookup(this, app_, dhtHash, /*includeFiles*/ false, /*asArray*/ true, respond);
             return;
         }

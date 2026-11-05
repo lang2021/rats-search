@@ -1,7 +1,6 @@
 <ng-container *transloco="let t">
   <app-document-title
     [parts]="[
-      controls.queryString,
       (controls.contentType ?? 'null') === 'null'
         ? null
         : t('content_types.plural.' + controls.contentType),
@@ -150,18 +149,31 @@
               [placeholder]="t('torrents.search')"
               [formControl]="queryString"
               autocapitalize="none"
-              (keyup.enter)="controller.setQueryString(queryString.value)"
+              (input)="onQueryEdit()"
+              (keyup.enter)="submitSearch()"
             />
             @if (queryString.value) {
               <button
                 mat-icon-button
                 [matTooltip]="t('torrents.clear_search')"
-                (click)="queryString.reset(); controller.setQueryString(null)"
+                (click)="queryString.reset(); submitSearch()"
               >
                 <mat-icon>close</mat-icon>
               </button>
             }
           </mat-form-field>
+        </div>
+        <div class="form-field-container form-field-container-search-scope">
+          <mat-form-field subscriptSizing="dynamic">
+            <mat-label>搜索范围</mat-label>
+            <mat-select [value]="searchScope" (valueChange)="setSearchScope($event)">
+              <mat-option value="local">仅本地索引</mat-option>
+              <mat-option value="peers">本地＋Rats 节点</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
+        <div class="form-field-container button-container">
+          <button mat-stroked-button type="button" (click)="submitSearch()">搜索</button>
         </div>
         <div class="form-field-container form-field-container-order-by">
           <mat-form-field subscriptSizing="dynamic">
@@ -196,7 +208,7 @@
             mat-mini-fab
             [matTooltip]="t('torrents.refresh')"
             color="primary"
-            (click)="dataSource.refresh()"
+            (click)="refreshSearch()"
           >
             <mat-icon>sync</mat-icon>
           </button>
@@ -221,6 +233,32 @@
         [totalIsEstimate]="dataSource.result.totalCountIsEstimate"
         [hasNextPage]="dataSource.result.hasNextPage"
       />
+      @if (searchScope === "peers") {
+        <section class="remote-search-panel" aria-label="Rats 节点搜索结果">
+          <div class="remote-search-heading">
+            <div><h2>RATS 节点结果</h2><p>结果仅临时展示；打开单条详情时才按需获取并保存。旧节点未附请求标识的回复无法安全归属，暂不显示。</p></div>
+            @if (remoteStatus === "loading") {
+              <button mat-stroked-button type="button" (click)="cancelRemoteSearch()">取消远端搜索</button>
+            }
+          </div>
+          <p class="remote-search-status" role="status">{{ remoteMessage || "输入关键词并点击搜索，才会向已连接节点发送关键词。" }}</p>
+          @if (remoteStatus === "done") {
+            <p class="remote-search-status">远端独有 {{ visibleRemoteResults.length }} 条；与本地重复 {{ remoteDuplicateCount }} 条，已合并去重。</p>
+          }
+          @if (visibleRemoteResults.length) {
+            <div class="remote-search-list">
+              @for (item of visibleRemoteResults; track item.hash) {
+                <div class="remote-search-row">
+                  <div class="remote-search-title"><strong>{{ item.name }}</strong><small>RATS 节点 {{ item.peer?.slice(0, 8) || "未知" }} · {{ item.isFileMatch ? "文件匹配" : "资源匹配" }}</small></div>
+                  <span>{{ item.size | filesize }}</span>
+                  <button mat-button type="button" (click)="openRemote(item)">查看详情</button>
+                  <a [href]="'magnet:?xt=urn:btih:' + item.hash" aria-label="复制或打开磁力链接">磁力链接</a>
+                </div>
+              }
+            </div>
+          }
+        </section>
+      }
     </mat-drawer-content>
   </mat-drawer-container>
 </ng-container>

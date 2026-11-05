@@ -29,6 +29,7 @@ private slots:
     void testNoFileRootByDefault();
     void testAuthorizedTorrentFileCreationWithoutP2p();
     void testBtTransferDeniedWithoutPermission();
+    void testRemoteSearchRequiresConsent();
     void testTraversalAndSymlinks();
     void testWebSocketRequiresTokenAndChecksPaths();
     void testEventsOnlyReachAuthenticatedWebSockets();
@@ -105,6 +106,8 @@ void TestApiSecurity::testHttpRequiresToken()
     QCOMPARE(request("stats.get", {}, false).status, 401);
     QCOMPARE(request("stats.get").status, 400); // authenticated; test server has no router
     QCOMPARE(request("torrent.create", {{"path", root_ + "/source.txt"}, {"seed", true}}, false).status, 401);
+    QCOMPARE(request("search.remote", {{"query", "private term"}}, false).status, 401);
+    QCOMPARE(request("search.remote", {}, true, true).status, 405);
 
     QNetworkAccessManager manager;
     QNetworkReply* reply = manager.get(QNetworkRequest(QUrl(QStringLiteral("http://127.0.0.1:%1/metrics").arg(port_))));
@@ -287,6 +290,35 @@ void TestApiSecurity::testBtTransferDeniedWithoutPermission()
     QVERIFY(denied("download.addFile", { { "path", data.path() + "/source.torrent" } }));
     app.engine()->setFileTransferPermissions(true, false);
     QVERIFY(denied("torrent.create", { { "path", data.path() + "/source.txt" }, { "seed", true } }));
+}
+
+void TestApiSecurity::testRemoteSearchRequiresConsent()
+{
+    QTemporaryDir data;
+    QVERIFY(data.isValid());
+    rats::app::Application::Options options;
+    options.dataDirectory = data.path();
+    options.headless = true;
+    rats::app::Application app(options);
+    rats::rest::ApiRouter router(&app);
+    bool called = false;
+    rats::Result result;
+    router.call("search.remote", {
+        { "query", "private term" },
+        { "searchId", "b430baf0-0fb7-4c06-b44d-33e84dca7ae3" }
+    }, [&](const rats::Result& value) { result = value; called = true; });
+    QVERIFY(called);
+    QVERIFY(!result.ok());
+    QVERIFY(result.error().contains("permission disabled"));
+    app.config()->setRemoteSearchEnabled(true);
+    called = false;
+    router.call("search.remote", {
+        { "query", "private term" },
+        { "searchId", "b430baf0-0fb7-4c06-b44d-33e84dca7ae3" }
+    }, [&](const rats::Result& value) { result = value; called = true; });
+    QVERIFY(called);
+    QVERIFY(!result.ok());
+    QVERIFY(result.error().contains("network unavailable"));
 }
 
 void TestApiSecurity::testFilePathsRequireExplicitRoot()

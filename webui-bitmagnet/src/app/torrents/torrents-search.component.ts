@@ -1,4 +1,5 @@
 import {
+  ChangeDetectorRef,
   ChangeDetectionStrategy,
   Component,
   inject,
@@ -25,7 +26,10 @@ import * as generated from "../graphql/generated";
 import { intParam, stringListParam, stringParam } from "../util/query-string";
 import { AppModule } from "../app.module";
 import { DocumentTitleComponent } from "../layout/document-title.component";
+import { ratsCall, RatsTorrent } from "../rats/rats-api";
+import { takeQueuedLocalSearch } from "../rats/search-navigation";
 import { IntEstimatePipe } from "../pipes/int-estimate.pipe";
+import { FilesizePipe } from "../pipes/filesize.pipe";
 import { TorrentsBulkActionsComponent } from "./torrents-bulk-actions.component";
 import { contentTypeList, contentTypeMap } from "./content-types";
 import {
@@ -67,6 +71,7 @@ import {
     TorrentsBulkActionsComponent,
     TorrentsTableComponent,
     IntEstimatePipe,
+    FilesizePipe,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -76,6 +81,7 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
   private apollo = inject(Apollo);
   private errorsService = inject(ErrorsService);
   private transloco = inject(TranslocoService);
+  private changeDetector = inject(ChangeDetectorRef);
   breakpoints = inject(BreakpointsService);
 
   dataSource: TorrentsSearchDatasource;
@@ -94,6 +100,14 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
   compactColumns = compactColumns;
 
   queryString = new FormControl("");
+  searchScope: "local" | "peers" = "local";
+  remoteResults: RatsTorrent[] = [];
+  remoteStatus: "idle" | "loading" | "done" | "error" | "cancelled" = "idle";
+  remoteMessage = "";
+  remotePeers = 0;
+  private remoteAbort?: AbortController;
+  private remoteSearchId?: string;
+  private remoteQuery = "";
 
   result = emptyResult;
 
@@ -150,16 +164,19 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
   }
 
   ngOnInit(): void {
+    const queuedSearch = takeQueuedLocalSearch();
     this.subscriptions.push(
       this.route.queryParams.subscribe((params) => {
-        this.queryString.setValue(stringParam(params, "query") ?? null);
-        this.controller.update(() => paramsToControls(params));
+        const next = paramsToControls(params, this.controls.queryString ?? undefined);
+        this.queryString.setValue(next.queryString ?? null);
+        this.controller.update(() => next);
       }),
       this.controller.controls$.subscribe((ctrl) => {
         void this.router.navigate([], {
           relativeTo: this.route,
           queryParams: controlsToParams(ctrl),
           queryParamsHandling: "replace",
+          replaceUrl: true,
         });
       }),
       this.multiSelection.changed.subscribe((selection) => {
@@ -169,11 +186,126 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
         );
       }),
     );
+    if (queuedSearch) {
+      this.queryString.setValue(queuedSearch);
+      this.controller.setQueryString(queuedSearch);
+    }
   }
 
   ngOnDestroy() {
+    this.cancelRemoteSearch();
     this.subscriptions.forEach((subscription) => subscription.unsubscribe());
     this.subscriptions = new Array<Subscription>();
+  }
+
+  setSearchScope(scope: "local" | "peers") {
+    this.searchScope = scope;
+    if (scope === "local") {
+      this.cancelRemoteSearch();
+      this.remoteResults = [];
+      this.remoteStatus = "idle";
+      this.remoteMessage = "";
+    }
+  }
+
+  submitSearch() {
+    const query = (this.queryString.value ?? "").trim();
+    this.controller.setQueryString(query || null);
+    if (this.searchScope === "peers") void this.runRemoteSearch(query);
+    else this.cancelRemoteSearch();
+  }
+
+  refreshSearch() {
+    this.dataSource.refresh();
+    if (this.searchScope === "peers")
+      void this.runRemoteSearch((this.controls.queryString ?? "").trim());
+  }
+
+  cancelRemoteSearch() {
+    const id = this.remoteSearchId;
+    this.remoteSearchId = undefined;
+    this.remoteAbort?.abort();
+    this.remoteAbort = undefined;
+    if (id) void ratsCall("search.cancel", { searchId: id }).catch(() => {});
+    if (this.remoteStatus === "loading") {
+      this.remoteStatus = "cancelled";
+      this.remoteMessage = "远端搜索已取消";
+    }
+  }
+
+  onQueryEdit() {
+    if ((this.queryString.value ?? "").trim() !== this.remoteQuery) {
+      this.cancelRemoteSearch();
+      this.remoteResults = [];
+    }
+  }
+
+  get visibleRemoteResults(): RatsTorrent[] {
+    const local = new Set(this.result.items.map((item) => item.infoHash.toLowerCase()));
+    return this.remoteResults.filter((item) => !local.has(item.hash.toLowerCase()));
+  }
+
+  get remoteDuplicateCount(): number {
+    return this.remoteResults.length - this.visibleRemoteResults.length;
+  }
+
+  async openRemote(item: RatsTorrent) {
+    try {
+      await ratsCall("torrent.get", { hash: item.hash, peer: item.peer, files: true });
+      await this.router.navigate(["../permalink", item.hash], { relativeTo: this.route });
+    } catch (error) {
+      this.remoteStatus = "error";
+      this.remoteMessage = error instanceof Error ? error.message : "无法读取远端详情";
+      this.changeDetector.markForCheck();
+    }
+  }
+
+  private async runRemoteSearch(query: string) {
+    this.cancelRemoteSearch();
+    this.remoteResults = [];
+    this.remoteQuery = query;
+    if (query.length < 3) {
+      this.remoteStatus = "error";
+      this.remoteMessage = "远端搜索至少需要 3 个字符";
+      return;
+    }
+    const id = crypto.randomUUID();
+    const controller = new AbortController();
+    this.remoteSearchId = id;
+    this.remoteAbort = controller;
+    this.remoteStatus = "loading";
+    this.remoteMessage = "正在查询已连接的 Rats 节点…";
+    try {
+      const response = await ratsCall<{ items: RatsTorrent[]; peers: number; windowExpired: boolean }>(
+        "search.remote",
+        {
+          searchId: id,
+          query,
+          limit: 50,
+          sort: this.controls.orderBy.field,
+          orderDesc: this.controls.orderBy.descending,
+        },
+        controller.signal,
+      );
+      if (this.remoteSearchId !== id) return;
+      this.remoteResults = response.items;
+      this.remotePeers = response.peers;
+      this.remoteStatus = "done";
+      this.remoteMessage = `查询窗口已结束 · 已连接 ${response.peers} 个节点`;
+      this.changeDetector.markForCheck();
+    } catch (error) {
+      if (this.remoteSearchId !== id) return;
+      this.remoteStatus = controller.signal.aborted ? "cancelled" : "error";
+      this.remoteMessage = controller.signal.aborted
+        ? "远端搜索已取消"
+        : error instanceof Error ? error.message : "远端搜索失败";
+      this.changeDetector.markForCheck();
+    } finally {
+      if (this.remoteSearchId === id) {
+        this.remoteSearchId = undefined;
+        this.remoteAbort = undefined;
+      }
+    }
   }
 }
 
@@ -195,8 +327,8 @@ const initControls: TorrentSearchControls = {
   },
 };
 
-const paramsToControls = (params: Params): TorrentSearchControls => {
-  const queryString = stringParam(params, "query");
+const paramsToControls = (params: Params, currentQuery?: string): TorrentSearchControls => {
+  const queryString = stringParam(params, "query") ?? currentQuery;
   const activeFacets = stringListParam(params, "facets");
   let selectedTorrent: TorrentSelection | undefined;
   const selectedTorrentParam = stringParam(params, "torrent");
@@ -244,7 +376,6 @@ const controlsToParams = (ctrl: TorrentSearchControls): Params => {
     desc = orderBy.descending ? "1" : "0";
   }
   return {
-    query: ctrl.queryString ? encodeURIComponent(ctrl.queryString) : undefined,
     page,
     limit,
     content_type: ctrl.contentType,

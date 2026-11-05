@@ -7,8 +7,12 @@
 
 #include "app/application.h"
 #include "app/config_store.h"
+#include "data/torrent_repository.h"
+#include "domain/torrent.h"
 #include "net/p2p_transport.h"
 #include "peer/peer_api.h"
+#include "rest/api_router.h"
+#include "services/search_service.h"
 #include "services/peer_registry.h"
 
 // librats' EventBus::emit collides with Qt's keyword macros.
@@ -79,11 +83,53 @@ private slots:
         std::atomic<int> feedRequests { 0 };
         std::atomic<int> randomReplies { 0 };
         std::atomic<int> torrentRequests { 0 };
+        std::atomic<int> webSearchRequests { 0 };
+        std::atomic<int> legacyRequests { 0 };
+        std::atomic<int> servedSearchReplies { 0 };
         std::atomic<int> advertisedTorrents { -1 };
         messages->on("feed_response", [&replies](const librats::PeerId&, const librats::Json&) { ++replies; });
         messages->on("feed", [&feedRequests](const librats::PeerId&, const librats::Json&) { ++feedRequests; });
         messages->on("randomTorrents_response", [&randomReplies](const librats::PeerId&, const librats::Json&) { ++randomReplies; });
         messages->on("torrent", [&torrentRequests](const librats::PeerId&, const librats::Json&) { ++torrentRequests; });
+        messages->on("searchTorrent", [messages, &webSearchRequests, &legacyRequests](const librats::PeerId&, const librats::Json& request) {
+            ++webSearchRequests;
+            const std::string id = request.value("searchId", std::string());
+            const std::string text = request.value("text", std::string());
+            if (text == "silent") return;
+            if (text == "legacyonly") {
+                if (request.value("query", std::string()) == text) ++legacyRequests;
+                QMetaObject::invokeMethod(QCoreApplication::instance(), [messages]() {
+                    messages->send("searchTorrent_response", librats::Json {
+                        { "hash", std::string(40, 'c') }, { "name", "legacy-only result" } });
+                }, Qt::QueuedConnection);
+                return;
+            }
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [messages, id]() {
+                messages->send("searchTorrent_response", librats::Json {
+                    { "hash", std::string(40, 'b') }, { "name", "controlled remote result" },
+                    { "size", 1234 }, { "searchId", id } });
+                messages->send("searchTorrent_response", librats::Json {
+                    { "hash", std::string(40, 'b') }, { "name", "duplicate result" },
+                    { "searchId", id } });
+                messages->send("searchTorrent_response", librats::Json {
+                    { "hash", std::string(40, 'c') }, { "name", "unrelated legacy result" } });
+            }, Qt::QueuedConnection);
+        });
+        messages->on("searchFiles", [messages](const librats::PeerId&, const librats::Json& request) {
+            const std::string text = request.value("text", std::string());
+            if (text == "silent" || text == "legacyonly") return;
+            const std::string id = request.value("searchId", std::string());
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [messages, id]() {
+                messages->send("searchFiles_response", librats::Json {
+                    { "hash", std::string(40, 'b') }, { "name", "file match duplicate" },
+                    { "isFileMatch", true }, { "searchId", id } });
+            }, Qt::QueuedConnection);
+        });
+        messages->on("searchTorrent_response", [&servedSearchReplies](const librats::PeerId&, const librats::Json& response) {
+            if (response.value("searchId", std::string()) == "5a72c36d-8045-4de6-84d7-c28b24633c22"
+                && response.value("hash", std::string()) == std::string(40, 'd'))
+                ++servedSearchReplies;
+        });
         messages->on("client_info", [&advertisedTorrents](const librats::PeerId&, const librats::Json& info) {
             advertisedTorrents = info.value("torrents", 0);
         });
@@ -114,6 +160,103 @@ private slots:
         messages->send("searchTorrent_response", searchHit);
         QTest::qWait(200);
         QCOMPARE(remoteHits.size(), 1);
+
+        // Web search is opt-in and independent of outward index sharing.
+        const QString searchId = QStringLiteral("b430baf0-0fb7-4c06-b44d-33e84dca7ae3");
+        bool blockedDone = false;
+        rats::Result blocked;
+        app.api()->call("search.remote", { { "query", "controlled" }, { "searchId", searchId } },
+            [&](const rats::Result& result) { blocked = result; blockedDone = true; });
+        QVERIFY(blockedDone);
+        QVERIFY(!blocked.ok());
+        QCOMPARE(webSearchRequests.load(), 0);
+
+        app.config()->setRemoteSearchEnabled(true);
+        QVERIFY(!app.config()->indexExchangeEnabled());
+        bool localDone = false;
+        app.api()->call("search.torrents", { { "query", "controlled" }, { "localOnly", true } },
+            [&](const rats::Result& result) { QVERIFY(result.ok()); localDone = true; });
+        QVERIFY(localDone);
+        QCOMPARE(webSearchRequests.load(), 0);
+
+        bool remoteDone = false;
+        rats::Result remote;
+        app.api()->call("search.remote", { { "query", "controlled" }, { "searchId", searchId } },
+            [&](const rats::Result& result) { remote = result; remoteDone = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(remoteDone, 5000);
+        QVERIFY(remote.ok());
+        const QJsonArray items = remote.data().toObject()["items"].toArray();
+        QCOMPARE(items.size(), 1); // same hash from torrent and file responses
+        QCOMPARE(items.first().toObject()["hash"].toString(), QString(40, QLatin1Char('b')));
+        QVERIFY(items.first().toObject()["remote"].toBool());
+        QVERIFY(!app.search()->get(QString(40, QLatin1Char('b')), false).has_value());
+        QVERIFY(webSearchRequests.load() > 0);
+
+        // A legacy peer receives the unchanged request and answers without an
+        // ID. PeerApi sees the reply, but Web cannot safely attribute it.
+        const int seenBeforeLegacy = remoteHits.size();
+        bool legacyDone = false;
+        rats::Result legacy;
+        const QString legacyId = QStringLiteral("8462e8ae-2ba1-419a-8c08-cf5f293eb244");
+        app.api()->call("search.remote", { { "query", "legacyonly" }, { "searchId", legacyId } },
+            [&](const rats::Result& result) { legacy = result; legacyDone = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(legacyDone, 5000);
+        QCOMPARE(legacyRequests.load(), 1);
+        QVERIFY(remoteHits.size() > seenBeforeLegacy);
+        QVERIFY(legacy.ok());
+        QCOMPARE(legacy.data().toObject()["items"].toArray().size(), 0);
+
+        // A timed-out empty request finishes, and later legacy packets have no
+        // reliable way to distinguish the old request from a newer one.
+        bool silentDone = false;
+        rats::Result silent;
+        app.api()->call("search.remote", { { "query", "silent" },
+            { "searchId", "8343dbe2-2783-4af2-ae9a-35ed72c46631" } },
+            [&](const rats::Result& result) { silent = result; silentDone = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(silentDone, 5000);
+        QVERIFY(silent.ok());
+        QCOMPARE(silent.data().toObject()["items"].toArray().size(), 0);
+
+        const QString cancelledId = QStringLiteral("db8e80e1-e9b6-45a0-900a-81b3c82c2fe5");
+        bool cancelledDone = false;
+        rats::Result cancelledResult;
+        app.api()->call("search.remote", { { "query", "controlled" }, { "searchId", cancelledId } },
+            [&](const rats::Result& result) { cancelledResult = result; cancelledDone = true; });
+        app.api()->call("search.cancel", { { "searchId", cancelledId } },
+            [&](const rats::Result& result) { QVERIFY(result.data().toObject()["cancelled"].toBool()); });
+        QVERIFY(cancelledDone);
+        QVERIFY(!cancelledResult.ok());
+        bool nextDone = false;
+        rats::Result next;
+        app.api()->call("search.remote", { { "query", "controlled" },
+            { "searchId", "b16af68e-a78d-4989-a288-2b552c0826a8" } },
+            [&](const rats::Result& result) { next = result; nextDone = true; });
+        messages->send("searchTorrent_response", librats::Json {
+            { "hash", std::string(40, 'e') }, { "searchId", cancelledId.toStdString() } });
+        messages->send("searchTorrent_response", librats::Json {
+            { "hash", std::string(40, 'f') }, { "name", "late legacy result" } });
+        QTRY_VERIFY_WITH_TIMEOUT(nextDone, 5000);
+        QVERIFY(next.ok());
+        QCOMPARE(next.data().toObject()["items"].toArray().size(), 1);
+        QCOMPARE(next.data().toObject()["items"].toArray().first().toObject()["hash"].toString(),
+            QString(40, QLatin1Char('b')));
+        app.config()->setRemoteSearchEnabled(false);
+
+        rats::domain::Torrent shared;
+        shared.hash = QString(40, QLatin1Char('d'));
+        shared.name = QStringLiteral("controlled share fixture");
+        shared.size = 2345;
+        shared.files = 1;
+        shared.added = QDateTime::currentDateTimeUtc();
+        QVERIFY(app.torrents()->add(shared));
+        app.peers()->updateOurStats(37, 40, 1000);
+        const librats::Json incomingSearch {
+            { "text", "controlled share" },
+            { "searchId", "5a72c36d-8045-4de6-84d7-c28b24633c22" }
+        };
+        messages->send("searchTorrent", incomingSearch);
+        QTest::qWait(200);
+        QCOMPARE(servedSearchReplies.load(), 0); // no outward index permission
 
         // A new connection must receive our Feed request even though we have
         // not authorized any outward index sharing.
@@ -146,6 +289,8 @@ private slots:
 
         app.config()->setIndexExchangeEnabled(true);
         QVERIFY(app.featureStatus()["indexSharingRunning"].toBool());
+        messages->send("searchTorrent", incomingSearch);
+        QTRY_COMPARE_WITH_TIMEOUT(servedSearchReplies.load(), 1, 4000);
         QTRY_COMPARE_WITH_TIMEOUT(advertisedTorrents.load(), 37, 4000);
         requestFeed();
         QTest::qWait(300);

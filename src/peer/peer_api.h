@@ -41,12 +41,11 @@ public:
     void requestTorrent(const QString& peerId, const QString& hash, bool includeFiles = true);
 
 signals:
-    // A remote peer sent search hits (searchTorrent_response). Query is empty —
-    // the wire protocol never echoes it back — and torrents is the raw wire array
-    // with remote/peer provenance stamped on.
-    void remoteSearchResults(const QString& query, const QJsonArray& torrents);
+    // A remote peer sent search hits. searchId is an optional opaque request ID;
+    // older peers omit it. The keyword is never echoed back.
+    void remoteSearchResults(const QString& searchId, const QJsonArray& torrents);
     // A remote peer sent a file-search hit (searchFiles_response).
-    void remoteFileSearchResults(const QString& query, const QJsonArray& torrents);
+    void remoteFileSearchResults(const QString& searchId, const QJsonArray& torrents);
     // A remote peer answered a single-torrent request (torrent_response). Emitted
     // even when the torrent already exists locally, so callers awaiting a fetch
     // still receive the payload.

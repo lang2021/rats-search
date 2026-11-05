@@ -105,6 +105,7 @@ async function search(input: SearchInput, signal: AbortSignal) {
   if (query) {
     method = "search.torrents";
     params["query"] = query;
+    params["localOnly"] = true;
     params["sort"] = sortFields[order?.field ?? ""] ?? "";
     params["orderDesc"] = order?.descending ?? true;
   } else {

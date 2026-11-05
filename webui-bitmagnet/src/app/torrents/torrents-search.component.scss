@@ -93,3 +93,15 @@ app-paginator {
   padding-top: 14px;
   padding-bottom: 20px;
 }
+
+.remote-search-panel { clear: both; margin: 18px 8px 24px; border: 1px solid var(--rs-border, #777); color: var(--rs-text, inherit); }
+.remote-search-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; background: var(--rs-raised, transparent); border-bottom: 1px solid var(--rs-border, #777); }
+.remote-search-heading h2 { margin: 0; color: var(--rs-accent, inherit); font-size: 11px; letter-spacing: .2em; }
+.remote-search-heading p, .remote-search-status { margin: 5px 0 0; color: var(--rs-muted, #888); font-size: 12px; }
+.remote-search-status { padding: 10px 16px; }
+.remote-search-row { display: grid; grid-template-columns: minmax(0, 1fr) 100px 90px 90px; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--rs-border, #777); font-size: 12px; }
+.remote-search-title { min-width: 0; }
+.remote-search-title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.remote-search-title small { display: block; color: var(--rs-muted, #888); margin-top: 4px; }
+.remote-search-row a { color: var(--rs-accent, inherit); }
+@media (max-width: 700px) { .remote-search-row { grid-template-columns: minmax(0, 1fr) 90px; } .remote-search-row > span { display: none; } }
