@@ -120,6 +120,7 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     const int dhtPort = d_->options.dhtPort > 0 ? d_->options.dhtPort : cfg->dhtPort();
     const int maxPeers = d_->options.maxPeers > 0 ? d_->options.maxPeers : cfg->p2pConnections();
     d_->transport = std::make_unique<net::P2PTransport>(p2pPort, dhtPort, dataDir, maxPeers);
+    d_->transport->setIndependentDirect(cfg->independentDirect());
     d_->engine = std::make_unique<net::TorrentEngine>(d_->transport.get());
     d_->crawler = std::make_unique<net::Crawler>(d_->transport.get());
     d_->swarmScraper = std::make_unique<net::SwarmScraper>();
@@ -389,8 +390,11 @@ QJsonObject Application::featureStatus() const
     return QJsonObject {
         { "networkDesired", d_->config->networkEnabled() },
         { "networkRunning", actual },
-        { "restartRequired", d_->running && d_->config->networkEnabled() && !actual },
+        { "restartRequired", d_->running && d_->config->networkEnabled() &&
+            (!actual || d_->config->independentDirect() != d_->transport->independentDirectActive()) },
         { "dhtRunning", d_->transport->isDhtRunning() },
+        { "independentDirectDesired", d_->config->independentDirect() },
+        { "independentDirectSocketBound", actual && d_->transport->independentDirectActive() },
         { "mdnsRunning", d_->transport->isMdnsRunning() },
         { "p2pRunning", actual },
         { "btEngineReady", d_->engine->isReady() },

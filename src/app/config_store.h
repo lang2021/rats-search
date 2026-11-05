@@ -72,6 +72,9 @@ public:
     // starts local-only; enabling it takes effect on the next application start.
     bool networkEnabled() const;
     void setNetworkEnabled(bool enabled);
+    // macOS IPv4 DHT only; selected at transport startup, so changes require restart.
+    bool independentDirect() const;
+    void setIndependentDirect(bool enabled);
     bool resumeBtSession() const;
     void setResumeBtSession(bool enabled);
     bool btFileDownloadEnabled() const;

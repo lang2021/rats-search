@@ -57,6 +57,7 @@ void ConfigStore::setDefaults()
 {
     config_ = QJsonObject { // Network
         { "httpPort", 8095 }, { "p2pPort", 4444 }, { "dhtPort", 6881 }, { "networkEnabled", false },
+        { "independentDirect", false },
         { "resumeBtSession", false }, { "btFileDownload", false }, { "btFileUpload", false },
         { "mdns", false }, { "indexExchange", false }, { "remoteSearch", false },
 
@@ -246,6 +247,14 @@ bool ConfigStore::networkEnabled() const
 void ConfigStore::setNetworkEnabled(bool enabled)
 {
     setValue("networkEnabled", enabled);
+}
+bool ConfigStore::independentDirect() const
+{
+    return config_["independentDirect"].toBool(false);
+}
+void ConfigStore::setIndependentDirect(bool enabled)
+{
+    setValue("independentDirect", enabled);
 }
 bool ConfigStore::resumeBtSession() const
 {

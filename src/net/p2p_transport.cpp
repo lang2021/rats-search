@@ -37,10 +37,102 @@
 #include <QDir>
 #include <QJsonDocument>
 #include <QTimer>
+#ifdef __APPLE__
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <net/if_types.h>
+#include <arpa/inet.h>
+#include <dns_sd.h>
+#include <sys/select.h>
+#endif
 
 namespace rats::net {
 
 namespace {
+
+#ifdef __APPLE__
+// Reject ambiguous paths rather than picking the first non-TUN interface.
+unsigned int physicalIpv4Interface(QString& name)
+{
+    ifaddrs* addresses = nullptr;
+    if (getifaddrs(&addresses) != 0) return 0;
+    QSet<QString> hardware;
+    QSet<QString> ipv4;
+    for (auto* entry = addresses; entry; entry = entry->ifa_next) {
+        if (!entry->ifa_addr || !entry->ifa_name ||
+            (entry->ifa_flags & (IFF_UP | IFF_RUNNING)) != (IFF_UP | IFF_RUNNING) ||
+            (entry->ifa_flags & (IFF_LOOPBACK | IFF_POINTOPOINT))) continue;
+        const QString candidate = QString::fromLocal8Bit(entry->ifa_name);
+        if (entry->ifa_addr->sa_family == AF_LINK &&
+            reinterpret_cast<const sockaddr_dl*>(entry->ifa_addr)->sdl_type == IFT_ETHER)
+            hardware.insert(candidate);
+        if (entry->ifa_addr->sa_family == AF_INET) {
+            const auto address = ntohl(reinterpret_cast<const sockaddr_in*>(entry->ifa_addr)->sin_addr.s_addr);
+            if (address != 0 && (address >> 16) != 0xa9fe) ipv4.insert(candidate);
+        }
+    }
+    freeifaddrs(addresses);
+    hardware.intersect(ipv4);
+    if (hardware.size() != 1) {
+        qWarning() << "Independent Direct requires exactly one active physical IPv4 interface; found"
+                   << hardware.size();
+        return 0;
+    }
+    name = *hardware.cbegin();
+    const QByteArray bytes = name.toLocal8Bit();
+    return if_nametoindex(bytes.constData());
+}
+
+bool publicIpv4Seed(const std::string& host)
+{
+    in_addr value{};
+    if (inet_pton(AF_INET, host.c_str(), &value) != 1) return false;
+    const uint32_t ip = ntohl(value.s_addr);
+    return (ip >> 24) != 0 && (ip >> 24) != 10 && (ip >> 24) != 127 &&
+        (ip & 0xffff0000u) != 0xa9fe0000u && // link-local
+        (ip & 0xffff0000u) != 0xc0a80000u && // RFC 1918
+        (ip & 0xfff00000u) != 0xac100000u &&
+        (ip & 0xffc00000u) != 0x64400000u && // carrier NAT
+        (ip & 0xfffe0000u) != 0xc6120000u && // Mihomo fake-IP range
+        (ip & 0xffffff00u) != 0xc0000200u && // documentation ranges
+        (ip & 0xffffff00u) != 0xc6336400u &&
+        (ip & 0xffffff00u) != 0xcb007100u &&
+        (ip >> 28) < 0xe;
+}
+
+struct ScopedDnsAnswer {
+    std::string address;
+};
+
+void scopedDnsReply(DNSServiceRef, DNSServiceFlags, uint32_t, DNSServiceErrorType error,
+    const char*, const sockaddr* address, uint32_t, void* context)
+{
+    if (error != kDNSServiceErr_NoError || !address || address->sa_family != AF_INET) return;
+    char text[INET_ADDRSTRLEN]{};
+    if (!inet_ntop(AF_INET, &reinterpret_cast<const sockaddr_in*>(address)->sin_addr, text, sizeof(text))) return;
+    if (publicIpv4Seed(text)) static_cast<ScopedDnsAnswer*>(context)->address = text;
+}
+
+std::string scopedBootstrapAddress(const std::string& hostname, unsigned int interfaceIndex)
+{
+    DNSServiceRef service = nullptr;
+    ScopedDnsAnswer answer;
+    if (DNSServiceGetAddrInfo(&service, 0, interfaceIndex, kDNSServiceProtocol_IPv4,
+            hostname.c_str(), scopedDnsReply, &answer) != kDNSServiceErr_NoError) return {};
+    const int fd = DNSServiceRefSockFD(service);
+    for (int attempt = 0; fd >= 0 && attempt < 4 && answer.address.empty(); ++attempt) {
+        fd_set ready;
+        FD_ZERO(&ready);
+        FD_SET(fd, &ready);
+        timeval timeout { 0, 500000 };
+        const int result = select(fd + 1, &ready, nullptr, nullptr, &timeout);
+        if (result < 0 || (result > 0 && DNSServiceProcessResult(service) != kDNSServiceErr_NoError)) break;
+    }
+    DNSServiceRefDeallocate(service);
+    return answer.address;
+}
+#endif
 
 // Helper: Convert librats::Json to QJsonObject (via compact text round-trip).
 QJsonObject libratsJsonToQt(const librats::Json& j)
@@ -91,6 +183,7 @@ struct P2PTransport::Private {
     QString dataDirectory;
     bool running = false;
     bool bitTorrentEnabled = false;
+    bool independentDirect = false;
 
     // Registered message handlers, and the message types for which a MessageJson
     // dispatcher has already been wired (idempotency guard).
@@ -288,6 +381,17 @@ P2PTransport::~P2PTransport()
     stop();
 }
 
+void P2PTransport::setIndependentDirect(bool enabled)
+{
+    if (d_->running) return; // Startup-only setting; a restart is required.
+    d_->independentDirect = enabled;
+}
+
+bool P2PTransport::independentDirectActive() const
+{
+    return d_->running && d_->independentDirect && d_->dht && d_->dht->is_running();
+}
+
 bool P2PTransport::start()
 {
     if (d_->running) {
@@ -322,6 +426,54 @@ bool P2PTransport::start()
             librats::DhtDiscovery::Config dhtCfg;
             dhtCfg.dht_port = static_cast<uint16_t>(d_->dhtPort);
             dhtCfg.data_dir = d_->dataDirectory.toStdString();
+#ifdef __APPLE__
+            if (d_->independentDirect) {
+                QString interfaceName;
+                const unsigned int index = physicalIpv4Interface(interfaceName);
+                if (index == 0) {
+                    qCritical() << "Independent Direct: no unambiguous physical IPv4 interface";
+                    d_->node.reset();
+                    return false;
+                }
+                dhtCfg.ipv4_bound_interface_index = index;
+                dhtCfg.enable_ipv6 = false;
+                qInfo() << "Independent Direct: DHT IPv4 bound to" << interfaceName << "index" << index;
+            }
+#else
+            if (d_->independentDirect) {
+                qCritical() << "Independent Direct DHT is supported only on macOS IPv4";
+                d_->node.reset();
+                return false;
+            }
+#endif
+#ifdef __APPLE__
+            if (d_->independentDirect) {
+                // Resolve on the chosen physical interface before starting DHT.
+                // DhtClient must receive numeric public addresses only: its normal
+                // getaddrinfo path would otherwise turn hostnames into TUN fake-IPs.
+                const auto seeds = dhtCfg.bootstrap_nodes.empty()
+                    ? librats::DhtClient::get_default_bootstrap_nodes() : dhtCfg.bootstrap_nodes;
+                dhtCfg.bootstrap_nodes.clear();
+                for (const auto& seed : seeds) {
+                    if (publicIpv4Seed(seed.host)) {
+                        dhtCfg.bootstrap_nodes.push_back(seed);
+                    } else {
+                        in_addr numeric{};
+                        if (inet_pton(AF_INET, seed.host.c_str(), &numeric) == 1) continue;
+                        const std::string address = scopedBootstrapAddress(
+                            seed.host, dhtCfg.ipv4_bound_interface_index);
+                        if (!address.empty()) dhtCfg.bootstrap_nodes.emplace_back(address, seed.port);
+                    }
+                }
+                if (dhtCfg.bootstrap_nodes.empty()) {
+                    qCritical() << "Independent Direct: scoped DNS found no usable public IPv4 bootstrap address";
+                    d_->node.reset();
+                    return false;
+                }
+                qInfo() << "Independent Direct: validated" << dhtCfg.bootstrap_nodes.size()
+                        << "public IPv4 bootstrap address(es)";
+            }
+#endif
             d_->dht = d_->node->add_subsystem(std::make_unique<librats::DhtDiscovery>(std::move(dhtCfg)));
         }
 
@@ -431,7 +583,11 @@ bool P2PTransport::start()
 #endif
 
         // --- Bring the node (and all subsystems) up -----------------------
-        if (!d_->node->start()) {
+        const bool nodeStarted = d_->node->start();
+        if (!nodeStarted || (d_->independentDirect && (!d_->dht || !d_->dht->is_running()))) {
+            if (nodeStarted && d_->independentDirect)
+                qCritical() << "Independent Direct: DHT IPv4 socket did not start on the selected interface";
+            if (nodeStarted) d_->node->stop();
             qWarning() << "Failed to start librats node";
             d_->node.reset();
             d_->dht = nullptr;

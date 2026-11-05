@@ -44,6 +44,8 @@ public:
     bool start();
     void stop();
     bool isRunning() const;
+    void setIndependentDirect(bool enabled); // call before start(); DHT IPv4 only
+    bool independentDirectActive() const;
 
     void setPortMappingEnabled(bool enabled);
     void setMdnsEnabled(bool enabled);

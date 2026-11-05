@@ -30,6 +30,7 @@ private slots:
     void legacyNetworkDefaultsAreNotConsent();
     void indexModulePreferencePersists();
     void btFilePermissionsAreIndependentAndPersist();
+    void independentDirectIsExplicitAndPersists();
 
 private:
     QTemporaryDir* dir_ = nullptr;
@@ -82,6 +83,17 @@ void TestConfigStore::networkGate_defaultsOffAndPersists()
     QVERIFY(!loaded.btFileUploadEnabled());
     QVERIFY(!loaded.mdnsEnabled());
     QVERIFY(!loaded.indexExchangeEnabled());
+}
+
+void TestConfigStore::independentDirectIsExplicitAndPersists()
+{
+    QVERIFY(!config_->independentDirect());
+    config_->setIndependentDirect(true);
+    QVERIFY(config_->save());
+    ConfigStore loaded(path_);
+    QVERIFY(loaded.load());
+    QVERIFY(loaded.independentDirect());
+    QVERIFY(!loaded.networkEnabled()); // The direct preference never enables networking.
 }
 
 void TestConfigStore::legacyNetworkDefaultsAreNotConsent()
