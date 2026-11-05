@@ -1,5 +1,5 @@
 import { ApolloLink, Observable } from "@apollo/client/core";
-import { ratsCall, ratsReady, RatsTorrent } from "./rats-api";
+import { ratsCall, ratsReady, ratsSafeSearch, RatsTorrent } from "./rats-api";
 
 type SearchInput = {
   queryString?: string;
@@ -106,6 +106,7 @@ async function search(input: SearchInput, signal: AbortSignal) {
     method = "search.torrents";
     params["query"] = query;
     params["localOnly"] = true;
+    params["safeSearch"] = await ratsSafeSearch(signal);
     params["sort"] = sortFields[order?.field ?? ""] ?? "";
     params["orderDesc"] = order?.descending ?? true;
   } else {

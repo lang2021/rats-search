@@ -5,6 +5,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QStandardPaths>
@@ -154,15 +155,23 @@ bool ConfigStore::load()
 
 bool ConfigStore::save()
 {
-    QFile file(configPath_);
+    QSaveFile file(configPath_);
     if (!file.open(QIODevice::WriteOnly)) {
-        qWarning() << "Failed to save config to" << configPath_;
+        qWarning() << "Failed to open config for saving:" << configPath_ << file.errorString();
         return false;
     }
 
     QJsonDocument doc(config_);
-    file.write(doc.toJson(QJsonDocument::Indented));
-    file.close();
+    const QByteArray data = doc.toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size()) {
+        qWarning() << "Failed to write config:" << configPath_ << file.errorString();
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit()) {
+        qWarning() << "Failed to commit config:" << configPath_ << file.errorString();
+        return false;
+    }
 
     dirty_ = false;
     qInfo() << "Config saved to" << configPath_;

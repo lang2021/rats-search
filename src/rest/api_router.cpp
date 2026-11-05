@@ -1071,8 +1071,14 @@ void ApiRouter::registerMethods()
 
     add("config.set", [this](const QJsonObject& params, const ResultCallback& respond) {
         const QStringList changed = app_->config()->fromJson(params);
-        if (!changed.isEmpty())
-            app_->config()->save();
+        // Even a no-op update must prove the current configuration is on disk
+        // before the API reports a successful save.
+        if (!app_->config()->save()) {
+            respond(Result::failure(changed.isEmpty()
+                ? QStringLiteral("Settings could not be saved to disk. No values changed in this request.")
+                : QStringLiteral("Settings applied in memory but could not be saved to disk. Retry saving before restarting.")));
+            return;
+        }
         QJsonObject result;
         result["changed"] = QJsonArray::fromStringList(changed);
         respond(Result::success(result));

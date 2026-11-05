@@ -242,6 +242,7 @@
             }
           </div>
           <p class="remote-search-status" role="status">{{ remoteMessage || "输入关键词并点击搜索，才会向已连接节点发送关键词。" }}</p>
+          <p class="remote-search-status">开启安全搜索时会向节点请求过滤成人分类；旧版节点可能忽略此参数，远端结果不能保证全部经过过滤。</p>
           @if (remoteStatus === "done" || remoteResults.length || remoteCandidates.length) {
             <p class="remote-search-status">已确认 {{ visibleRemoteResults.length }} 条；旧协议候选 {{ visibleRemoteCandidates.length }} 条；与本地重复的已确认结果 {{ remoteDuplicateCount }} 条。</p>
           }

@@ -19,9 +19,9 @@ type Peer = {
 type Database = {
   operation?: string;
   running?: boolean;
-  sharing?: unknown;
+  sharing?: boolean;
   snapshot?: unknown;
-  serve?: unknown;
+  serve?: { generating?: boolean; waiting?: number; sending?: number };
 };
 
 @Component({
@@ -40,7 +40,7 @@ type Database = {
         <div class="summary">
           <mat-card
             ><mat-card-content
-              ><strong>P2P 传输</strong
+              ><strong>Rats 节点网络</strong
               ><span>{{
                 p2p?.running ? "运行中" : "已停止"
               }}</span></mat-card-content
@@ -69,9 +69,9 @@ type Database = {
         </div>
         <h3>索引共享</h3>
         <p>
-          数据库共享：{{
-            database?.running ? "运行中" : "未运行"
-          }}；当前操作：{{ database?.operation || "无" }}
+          完整数据库共享授权：{{ database?.sharing ? "已启用" : "未启用" }}；
+          对外提供任务：{{ database?.serve?.generating || (database?.serve?.waiting ?? 0) > 0 || (database?.serve?.sending ?? 0) > 0 ? "处理中" : "无" }}；
+          本地数据库操作：{{ database?.running ? (database?.operation || "进行中") : "无" }}
         </p>
         <h3>连接节点</h3>
         <p *ngIf="peers.length === 0">暂无连接节点</p>

@@ -387,12 +387,19 @@ QJsonObject Application::featureStatus() const
 {
     const bool actual = d_->transport->isRunning();
     const auto serve = d_->databaseSync->serveStatus();
+#ifdef Q_OS_MACOS
+    const bool directSupported = true;
+#else
+    const bool directSupported = false;
+#endif
     return QJsonObject {
         { "networkDesired", d_->config->networkEnabled() },
         { "networkRunning", actual },
         { "restartRequired", d_->running && d_->config->networkEnabled() &&
-            (!actual || d_->config->independentDirect() != d_->transport->independentDirectActive()) },
+            (!actual || (directSupported && d_->config->independentDirect() != d_->transport->independentDirectActive()) ||
+                d_->config->mdnsEnabled() != d_->transport->isMdnsRunning()) },
         { "dhtRunning", d_->transport->isDhtRunning() },
+        { "independentDirectSupported", directSupported },
         { "independentDirectDesired", d_->config->independentDirect() },
         { "independentDirectSocketBound", actual && d_->transport->independentDirectActive() },
         { "mdnsRunning", d_->transport->isMdnsRunning() },

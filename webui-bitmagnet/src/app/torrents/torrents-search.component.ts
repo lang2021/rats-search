@@ -26,7 +26,7 @@ import * as generated from "../graphql/generated";
 import { intParam, stringListParam, stringParam } from "../util/query-string";
 import { AppModule } from "../app.module";
 import { DocumentTitleComponent } from "../layout/document-title.component";
-import { ratsCall, RatsTorrent, requestRatsToken } from "../rats/rats-api";
+import { ratsCall, ratsSafeSearch, RatsTorrent, requestRatsToken } from "../rats/rats-api";
 import { ratsApiBaseUrl } from "../../environments/environment";
 import { takeQueuedLocalSearch } from "../rats/search-navigation";
 import { IntEstimatePipe } from "../pipes/int-estimate.pipe";
@@ -294,6 +294,8 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
     try {
       await this.connectRemoteStream(id, controller.signal);
       if (this.remoteSearchId !== id || controller.signal.aborted) return;
+      const safeSearch = await ratsSafeSearch(controller.signal);
+      if (this.remoteSearchId !== id || controller.signal.aborted) return;
       const response = await ratsCall<{ items: RatsTorrent[]; candidates: RatsTorrent[]; peers: number; windowExpired: boolean }>(
         "search.remote",
         {
@@ -302,6 +304,7 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
           limit: 50,
           sort: this.controls.orderBy.field,
           orderDesc: this.controls.orderBy.descending,
+          safeSearch,
         },
         controller.signal,
       );

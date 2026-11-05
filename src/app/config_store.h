@@ -54,6 +54,7 @@ public:
      * @brief Save configuration to file
      */
     bool save();
+    bool hasUnsavedChanges() const { return dirty_; }
 
     // =========================================================================
     // Network Settings

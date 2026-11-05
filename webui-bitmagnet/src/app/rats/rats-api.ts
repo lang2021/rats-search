@@ -95,6 +95,11 @@ export async function ratsCall<T>(
   return envelope.data as T;
 }
 
+export async function ratsSafeSearch(signal?: AbortSignal): Promise<boolean> {
+  const config = await ratsCall<{ safeSearch: boolean }>("config.get", {}, signal);
+  return config.safeSearch === true;
+}
+
 export async function ratsReady(signal?: AbortSignal): Promise<boolean> {
   const response = await fetch("/readyz", { signal, headers: await authorizationHeaders() });
   return response.ok;

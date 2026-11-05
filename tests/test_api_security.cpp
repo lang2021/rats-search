@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QProcess>
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTemporaryDir>
@@ -25,6 +26,7 @@ private slots:
     void testHttpRequiresToken();
     void testTokenFileIsPrivateAndPersistent();
     void testAuthenticatedManagementRead();
+    void testConfigSetReportsPersistenceFailure();
     void testFilePathsRequireExplicitRoot();
     void testNoFileRootByDefault();
     void testAuthorizedTorrentFileCreationWithoutP2p();
@@ -194,6 +196,78 @@ void TestApiSecurity::testAuthenticatedManagementRead()
         reply->deleteLater();
     }
     api.stop();
+}
+
+void TestApiSecurity::testConfigSetReportsPersistenceFailure()
+{
+    QTemporaryDir data;
+    QVERIFY(data.isValid());
+    rats::app::Application::Options options;
+    options.dataDirectory = data.path();
+    options.headless = true;
+    rats::app::Application app(options);
+    rats::rest::ApiRouter router(&app);
+
+    const QString configPath = data.path() + "/rats.json";
+    QVERIFY(QDir().mkdir(configPath));
+    bool called = false;
+    rats::Result unchanged;
+    router.call("config.set", {}, [&](const rats::Result& result) {
+        called = true;
+        unchanged = result;
+    });
+    QVERIFY(called);
+    QVERIFY(!unchanged.ok());
+
+    QVERIFY(QDir().rmdir(configPath));
+    called = false;
+    rats::Result baseline;
+    router.call("config.set", {}, [&](const rats::Result& result) {
+        called = true;
+        baseline = result;
+    });
+    QVERIFY(called);
+    QVERIFY(baseline.ok());
+#ifdef Q_OS_MACOS
+    QCOMPARE(QProcess::execute("chmod", { "+a", "everyone deny delete", configPath }), 0);
+#else
+    QVERIFY(QFile::remove(configPath));
+    QVERIFY(QDir().mkdir(configPath));
+#endif
+    called = false;
+    rats::Result first;
+    router.call("config.set", { { "safeSearch", true } }, [&](const rats::Result& result) {
+        called = true;
+        first = result;
+    });
+#ifdef Q_OS_MACOS
+    const int resetResult = QProcess::execute("chmod", { "-a", "everyone deny delete", configPath });
+    QCOMPARE(resetResult, 0);
+#else
+    QVERIFY(QDir().rmdir(configPath));
+#endif
+    QVERIFY(called);
+    QVERIFY(!first.ok());
+    QVERIFY(first.error().contains("applied in memory"));
+    QVERIFY(app.config()->safeSearch());
+    QVERIFY(app.config()->hasUnsavedChanges());
+
+    rats::app::ConfigStore diskBeforeRetry(configPath);
+    QVERIFY(diskBeforeRetry.load());
+    QVERIFY(!diskBeforeRetry.safeSearch());
+    called = false;
+    rats::Result retry;
+    // Repeating the same value must retry the pending disk write.
+    router.call("config.set", { { "safeSearch", true } }, [&](const rats::Result& result) {
+        called = true;
+        retry = result;
+    });
+    QVERIFY(called);
+    QVERIFY(retry.ok());
+    QVERIFY(!app.config()->hasUnsavedChanges());
+    rats::app::ConfigStore restarted(configPath);
+    QVERIFY(restarted.load());
+    QVERIFY(restarted.safeSearch());
 }
 
 void TestApiSecurity::testNoFileRootByDefault()

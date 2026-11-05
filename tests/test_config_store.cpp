@@ -2,6 +2,10 @@
 
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QProcess>
 #include <QtTest>
 
 using rats::app::ConfigStore;
@@ -26,6 +30,8 @@ private slots:
     void languageAndDarkMode_haveDedicatedSignals();
     void uiFont_defaultsAndClamping();
     void saveThenLoad_roundTrips();
+    void saveFailureRetainsDirtyAndRecovers();
+    void saveCommitFailurePreservesPreviousFile();
     void networkGate_defaultsOffAndPersists();
     void legacyNetworkDefaultsAreNotConsent();
     void indexModulePreferencePersists();
@@ -258,6 +264,50 @@ void TestConfigStore::saveThenLoad_roundTrips()
     QVERIFY(reloaded.load());
     QCOMPARE(reloaded.filtersSizeMin(), 1024LL);
     QCOMPARE(reloaded.downloadPath(), QStringLiteral("/tmp/rats-downloads"));
+}
+
+void TestConfigStore::saveFailureRetainsDirtyAndRecovers()
+{
+    // A directory at the destination prevents opening the save file.
+    QVERIFY(QDir().mkdir(path_));
+    config_->setSafeSearch(true);
+    QVERIFY(config_->hasUnsavedChanges());
+    QVERIFY(!config_->save());
+    QVERIFY(config_->hasUnsavedChanges());
+    QVERIFY(QFileInfo(path_).isDir());
+
+    QVERIFY(QDir().rmdir(path_));
+    QVERIFY(config_->save());
+    QVERIFY(!config_->hasUnsavedChanges());
+    ConfigStore restarted(path_);
+    QVERIFY(restarted.load());
+    QVERIFY(restarted.safeSearch());
+}
+
+void TestConfigStore::saveCommitFailurePreservesPreviousFile()
+{
+#ifdef Q_OS_MACOS
+    QVERIFY(config_->save());
+    // Deny deletion but retain write permission: QSaveFile can open its temp
+    // file, while the final atomic replacement of this destination is refused.
+    QCOMPARE(QProcess::execute("chmod", { "+a", "everyone deny delete", path_ }), 0);
+    config_->setSafeSearch(true);
+    const bool committed = config_->save();
+    const int resetResult = QProcess::execute("chmod", { "-a", "everyone deny delete", path_ });
+    QCOMPARE(resetResult, 0);
+    QVERIFY(!committed);
+    QVERIFY(config_->hasUnsavedChanges());
+
+    ConfigStore unchanged(path_);
+    QVERIFY(unchanged.load());
+    QVERIFY(!unchanged.safeSearch());
+    QVERIFY(config_->save());
+    ConfigStore restarted(path_);
+    QVERIFY(restarted.load());
+    QVERIFY(restarted.safeSearch());
+#else
+    QSKIP("Immutable-file commit failure fixture is specific to macOS");
+#endif
 }
 
 void TestConfigStore::btFilePermissionsAreIndependentAndPersist()
