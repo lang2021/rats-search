@@ -405,6 +405,25 @@ void DatabaseSyncService::shutdown()
     }
 }
 
+void DatabaseSyncService::stopNetworkTransfers()
+{
+    setSharingEnabled(false);
+    setPeerSyncEnabled(false);
+    if (local_ && local_->operation == Operation::PeerPull) {
+        const LocalPtr old = local_;
+        old->cancel.cancel();
+        if (old->worker.isRunning()) old->worker.waitForFinished();
+        finishLocal(old, false, QStringLiteral("P2P network stopped"));
+    }
+    if (snapshotJob_) {
+        const SnapshotPtr old = snapshotJob_;
+        old->cancel.cancel();
+        if (old->worker.isRunning()) old->worker.waitForFinished();
+        snapshotJob_.reset();
+        QFile::remove(snapshot_.temporaryPath());
+    }
+}
+
 // --- export ----------------------------------------------------------------
 
 bool DatabaseSyncService::exportToFile(const QString& path, QString* error)
@@ -990,7 +1009,6 @@ void DatabaseSyncService::onSnapshotFinished(const SnapshotPtr& job, bool ok, qi
     // must not publish: both jobs write the same temporary path, so letting a stale
     // one commit would hand peers a half-written file.
     if (snapshotJob_ != job) {
-        QFile::remove(snapshot_.temporaryPath());
         return;
     }
     snapshotJob_.reset();

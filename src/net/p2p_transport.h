@@ -44,6 +44,8 @@ public:
     bool start();
     void stop();
     bool isRunning() const;
+    QString lastStartError() const;
+    void setListenOptions(int port, int dhtPort, int maxPeers); // only while stopped
     void setIndependentDirect(bool enabled); // call before start(); DHT IPv4 only
     bool independentDirectActive() const;
 

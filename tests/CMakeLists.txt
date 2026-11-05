@@ -72,6 +72,8 @@ add_rats_test(test_api_security)
 # executed under an outbound-denying sandbox; never run as part of plain ctest.
 add_executable(test_index_sharing_loopback test_index_sharing_loopback.cpp)
 target_link_libraries(test_index_sharing_loopback PRIVATE Qt6::Test ratscore)
+add_executable(test_network_lifecycle_loopback test_network_lifecycle_loopback.cpp)
+target_link_libraries(test_network_lifecycle_loopback PRIVATE Qt6::Test ratscore)
 
 # Copy libmysql.dll next to test executables so the QMYSQL driver can load.
 #

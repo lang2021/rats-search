@@ -117,9 +117,10 @@ public:
     bool saveSession(const QString& filePath);
     int loadSession(const QString& filePath);
     void enableMonitoring();
-    // Called after saving when the transport is taken down. Prevent stale
-    // download rows and stop polling a detached BitTorrent subsystem.
+    // Pause active tasks, preserve rows and resume data while the Node is released.
     void suspendForNetworkStop();
+    // Attach retained tasks to a fresh BT client, always initially paused.
+    bool reattachAfterNetworkStart();
 
 signals:
     void downloadStarted(const QString& hash);
@@ -172,6 +173,7 @@ private:
     mutable QMutex mutex_;
 
     QTimer* updateTimer_ = nullptr;
+    bool suspended_ = false;
 };
 
 } // namespace rats::service

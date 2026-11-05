@@ -36,6 +36,7 @@ public:
     // Dispatch a method by name. Unknown methods answer with a failure Result.
     // `respond` is always invoked exactly once.
     void call(const QString& method, const QJsonObject& params, const ResultCallback& respond);
+    void cancelRemoteSearches(const QString& reason);
 
 signals:
     // Broadcast to all connected clients (WebSocket). Emitted for push events

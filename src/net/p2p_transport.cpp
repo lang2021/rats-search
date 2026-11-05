@@ -37,6 +37,7 @@
 #include <QDir>
 #include <QJsonDocument>
 #include <QTimer>
+#include <atomic>
 #ifdef __APPLE__
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -184,6 +185,8 @@ struct P2PTransport::Private {
     bool running = false;
     bool bitTorrentEnabled = false;
     bool independentDirect = false;
+    std::atomic<uint64_t> generation { 0 };
+    QString lastStartError;
 
     // Registered message handlers, and the message types for which a MessageJson
     // dispatcher has already been wired (idempotency guard).
@@ -202,7 +205,7 @@ struct P2PTransport::Private {
     void setupCallbacks();
     void setupFileTransferCallbacks();
     void registerDispatcher(const QString& type);
-    void dispatchMessage(const QString& peerId, const QString& type, const QJsonObject& data);
+    void dispatchMessage(const QString& peerId, const QString& type, const QJsonObject& data, uint64_t sourceGeneration);
     void updatePeerCount();
     void requestPeerCountUpdate();
 };
@@ -214,25 +217,25 @@ void P2PTransport::Private::setupCallbacks()
     }
 
     // Connection callback. Runs on a reactor thread.
-    node->on_peer_connected([this](const librats::Peer& peer) {
+    const uint64_t sourceGeneration = generation.load();
+    node->on_peer_connected([this, sourceGeneration](const librats::Peer& peer) {
         QString peerId = QString::fromStdString(peer.id().to_hex());
-        qInfo() << "Peer connected:" << peerId.left(8) << "total peers:" << peerCount();
-        emit q->peerConnected(peerId);
-        requestPeerCountUpdate();
+        QMetaObject::invokeMethod(q, [this, peerId, sourceGeneration]() {
+            if (generation.load() != sourceGeneration || !running) return;
+            emit q->peerConnected(peerId);
+            updatePeerCount();
+        }, Qt::QueuedConnection);
     });
 
     // Disconnection callback. Runs on a reactor thread.
-    node->on_peer_disconnected([this](const librats::PeerId& id, librats::CloseReason reason) {
+    node->on_peer_disconnected([this, sourceGeneration](const librats::PeerId& id, librats::CloseReason reason) {
         QString peerId = QString::fromStdString(id.to_hex());
-        // The reason stays inside net/ — it is a librats type, and nothing above
-        // this layer knows one. Logging it here is the point of carrying it: a
-        // SlowConsumer drop and a peer that simply left are indistinguishable
-        // otherwise, which is exactly what made the storage-snapshot flapping
-        // read as an ordinary reconnect for as long as it did.
-        qInfo() << "Peer disconnected:" << peerId.left(8) << "reason:" << librats::to_string(reason)
-                << "total peers:" << peerCount();
-        emit q->peerDisconnected(peerId);
-        requestPeerCountUpdate();
+        QMetaObject::invokeMethod(q, [this, peerId, reason, sourceGeneration]() {
+            if (generation.load() != sourceGeneration || !running) return;
+            qInfo() << "Peer disconnected:" << peerId.left(8) << "reason:" << librats::to_string(reason);
+            emit q->peerDisconnected(peerId);
+            updatePeerCount();
+        }, Qt::QueuedConnection);
     });
 }
 
@@ -247,7 +250,8 @@ void P2PTransport::Private::setupFileTransferCallbacks()
         return;
     }
 
-    fileTransfer->on_offer([this](const librats::FileTransfer::Offer& offer) {
+    const uint64_t sourceGeneration = generation.load();
+    fileTransfer->on_offer([this, sourceGeneration](const librats::FileTransfer::Offer& offer) {
         const QString peerId = QString::fromStdString(offer.from.to_hex());
         const quint64 id = offer.id;
         const QString name = QString::fromStdString(offer.name);
@@ -259,10 +263,12 @@ void P2PTransport::Private::setupFileTransferCallbacks()
             return;
         }
         QMetaObject::invokeMethod(
-            q, [this, peerId, id, name, size]() { emit q->fileOffered(peerId, id, name, size); }, Qt::QueuedConnection);
+            q, [this, peerId, id, name, size, sourceGeneration]() {
+                if (generation.load() == sourceGeneration && running) emit q->fileOffered(peerId, id, name, size);
+            }, Qt::QueuedConnection);
     });
 
-    fileTransfer->on_progress([this](const librats::FileTransfer::Progress& progress) {
+    fileTransfer->on_progress([this, sourceGeneration](const librats::FileTransfer::Progress& progress) {
         const QString peerId = QString::fromStdString(progress.peer.to_hex());
         const quint64 id = progress.id;
         const bool sending = progress.direction == librats::FileTransfer::Direction::Sending;
@@ -271,19 +277,21 @@ void P2PTransport::Private::setupFileTransferCallbacks()
         const double rate = progress.transfer_rate_bps;
         QMetaObject::invokeMethod(
             q,
-            [this, peerId, id, sending, done, total, rate]() {
+            [this, peerId, id, sending, done, total, rate, sourceGeneration]() {
+                if (generation.load() != sourceGeneration || !running) return;
                 emit q->fileTransferProgress(peerId, id, sending, done, total, rate);
             },
             Qt::QueuedConnection);
     });
 
-    fileTransfer->on_complete([this](const librats::PeerId& peer, uint64_t id, bool success, const std::string& path) {
+    fileTransfer->on_complete([this, sourceGeneration](const librats::PeerId& peer, uint64_t id, bool success, const std::string& path) {
         const QString peerId = QString::fromStdString(peer.to_hex());
         const quint64 transferId = id;
         const QString file = QString::fromStdString(path);
         QMetaObject::invokeMethod(
             q,
-            [this, peerId, transferId, success, file]() {
+            [this, peerId, transferId, success, file, sourceGeneration]() {
+                if (generation.load() != sourceGeneration || !running) return;
                 emit q->fileTransferFinished(peerId, transferId, success, file);
             },
             Qt::QueuedConnection);
@@ -297,14 +305,15 @@ void P2PTransport::Private::registerDispatcher(const QString& type)
     }
     registeredDispatchers.insert(type);
 
-    messages->on(type.toStdString(), [this, type](const librats::PeerId& from, const librats::Json& data) {
+    const uint64_t sourceGeneration = generation.load();
+    messages->on(type.toStdString(), [this, type, sourceGeneration](const librats::PeerId& from, const librats::Json& data) {
         QString peerId = QString::fromStdString(from.to_hex());
         QJsonObject jsonData = libratsJsonToQt(data);
-        dispatchMessage(peerId, type, jsonData);
+        dispatchMessage(peerId, type, jsonData, sourceGeneration);
     });
 }
 
-void P2PTransport::Private::dispatchMessage(const QString& peerId, const QString& type, const QJsonObject& data)
+void P2PTransport::Private::dispatchMessage(const QString& peerId, const QString& type, const QJsonObject& data, uint64_t sourceGeneration)
 {
     // Inbound messages arrive on a librats reactor thread. Marshal delivery onto
     // the thread that owns this transport (the main thread), so every handler —
@@ -315,7 +324,8 @@ void P2PTransport::Private::dispatchMessage(const QString& peerId, const QString
     // transport is torn down before it is delivered.)
     QMetaObject::invokeMethod(
         q,
-        [this, peerId, type, data]() {
+        [this, peerId, type, data, sourceGeneration]() {
+            if (generation.load() != sourceGeneration || !running) return;
             auto it = messageHandlers.find(type);
             if (it != messageHandlers.end() && it.value()) {
                 it.value()(peerId, data);
@@ -356,7 +366,10 @@ void P2PTransport::Private::updatePeerCount()
 // there, so peers show up immediately instead of waiting for the next poll tick.
 void P2PTransport::Private::requestPeerCountUpdate()
 {
-    QMetaObject::invokeMethod(q, [this]() { updatePeerCount(); }, Qt::QueuedConnection);
+    const uint64_t sourceGeneration = generation.load();
+    QMetaObject::invokeMethod(q, [this, sourceGeneration]() {
+        if (generation.load() == sourceGeneration && running) updatePeerCount();
+    }, Qt::QueuedConnection);
 }
 
 // =========================================================================
@@ -381,6 +394,16 @@ P2PTransport::~P2PTransport()
     stop();
 }
 
+void P2PTransport::setListenOptions(int port, int dhtPort, int maxPeers)
+{
+    if (d_->running || d_->node) return;
+    d_->port = port;
+    d_->dhtPort = dhtPort;
+    d_->maxPeers = maxPeers;
+}
+
+QString P2PTransport::lastStartError() const { return d_->lastStartError; }
+
 void P2PTransport::setIndependentDirect(bool enabled)
 {
     if (d_->running) return; // Startup-only setting; a restart is required.
@@ -398,6 +421,12 @@ bool P2PTransport::start()
         return true;
     }
 
+    d_->lastStartError.clear();
+    ++d_->generation;
+    if (d_->port < 1 || d_->port > 65535 || d_->dhtPort < 1 || d_->dhtPort > 65535) {
+        d_->lastStartError = QStringLiteral("Invalid P2P or DHT listen port");
+        return false;
+    }
     try {
         qInfo() << "Starting P2P transport on port" << d_->port;
 
@@ -431,6 +460,7 @@ bool P2PTransport::start()
                 QString interfaceName;
                 const unsigned int index = physicalIpv4Interface(interfaceName);
                 if (index == 0) {
+                    d_->lastStartError = QStringLiteral("Independent Direct: no unambiguous physical IPv4 interface");
                     qCritical() << "Independent Direct: no unambiguous physical IPv4 interface";
                     d_->node.reset();
                     return false;
@@ -441,6 +471,7 @@ bool P2PTransport::start()
             }
 #else
             if (d_->independentDirect) {
+                d_->lastStartError = QStringLiteral("Independent Direct DHT is supported only on macOS IPv4");
                 qCritical() << "Independent Direct DHT is supported only on macOS IPv4";
                 d_->node.reset();
                 return false;
@@ -466,6 +497,7 @@ bool P2PTransport::start()
                     }
                 }
                 if (dhtCfg.bootstrap_nodes.empty()) {
+                    d_->lastStartError = QStringLiteral("Independent Direct: no usable public IPv4 bootstrap address");
                     qCritical() << "Independent Direct: scoped DNS found no usable public IPv4 bootstrap address";
                     d_->node.reset();
                     return false;
@@ -585,22 +617,13 @@ bool P2PTransport::start()
         // --- Bring the node (and all subsystems) up -----------------------
         const bool nodeStarted = d_->node->start();
         if (!nodeStarted || (d_->independentDirect && (!d_->dht || !d_->dht->is_running()))) {
+            d_->lastStartError = nodeStarted
+                ? QStringLiteral("Independent Direct: DHT IPv4 socket failed to start")
+                : QStringLiteral("librats Node failed to start");
             if (nodeStarted && d_->independentDirect)
                 qCritical() << "Independent Direct: DHT IPv4 socket did not start on the selected interface";
-            if (nodeStarted) d_->node->stop();
             qWarning() << "Failed to start librats node";
-            d_->node.reset();
-            d_->dht = nullptr;
-            d_->mdns = nullptr;
-            d_->messages = nullptr;
-            d_->portMapping = nullptr;
-            d_->reconnect = nullptr;
-            d_->pex = nullptr;
-            d_->holePunch = nullptr;
-            d_->relay = nullptr;
-            d_->fileTransfer = nullptr;
-            d_->storage = nullptr;
-            d_->bittorrent = nullptr;
+            stop();
             return false;
         }
 
@@ -631,15 +654,19 @@ bool P2PTransport::start()
 
     } catch (const std::exception& e) {
         qCritical() << "Exception starting P2P transport:" << e.what();
+        d_->lastStartError = QStringLiteral("Exception starting librats Node: %1").arg(QString::fromUtf8(e.what()));
+        stop();
         return false;
     }
 }
 
 void P2PTransport::stop()
 {
-    if (!d_->running) {
+    if (!d_->running && !d_->node) {
         return;
     }
+    const bool wasRunning = d_->running;
+    ++d_->generation; // invalidate callbacks posted by this Node before teardown
 
     qInfo() << "Stopping P2P transport...";
 
@@ -668,8 +695,11 @@ void P2PTransport::stop()
 
     d_->running = false;
     d_->lastPeerCount = -1;
-    emit peerCountChanged(0);
-    emit stopped();
+    d_->lastNatMapping = -1;
+    if (wasRunning) {
+        emit peerCountChanged(0);
+        emit stopped();
+    }
 
     qInfo() << "P2P transport stopped";
 }

@@ -357,6 +357,12 @@ bool ApiRouter::finishRemoteSearch(const QString& searchId, const QString& error
     return true;
 }
 
+void ApiRouter::cancelRemoteSearches(const QString& reason)
+{
+    for (const QString& id : remoteSearches_.keys())
+        finishRemoteSearch(id, reason);
+}
+
 ApiRouter::ApiRouter(app::Application* app, QObject* parent) : QObject(parent), app_(app)
 {
     registerMethods();
@@ -1086,6 +1092,20 @@ void ApiRouter::registerMethods()
 
     add("features.status", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
         respond(Result::success(app_->featureStatus()));
+    });
+    add("network.start", [this](const QJsonObject&, const ResultCallback& respond) {
+        const bool ok = app_->startNetwork();
+        const QJsonObject status = app_->featureStatus();
+        respond(ok ? Result::success(status)
+                   : Result::failure(status["networkState"] == QLatin1String("failed") &&
+                             !status["lastError"].toString().isEmpty()
+                         ? status["lastError"].toString()
+                         : QStringLiteral("Network start is busy or application is not ready")));
+    });
+    add("network.stop", [this](const QJsonObject&, const ResultCallback& respond) {
+        const bool ok = app_->stopNetwork();
+        respond(ok ? Result::success(app_->featureStatus())
+                   : Result::failure(QStringLiteral("Network stop is busy or on the wrong thread")));
     });
 
     // -----------------------------------------------------------------------

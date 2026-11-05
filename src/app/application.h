@@ -86,6 +86,9 @@ public:
     // subsystem (the database) fails. Idempotent.
     bool start();
     void stop();
+    // Runtime control; independent of the persisted networkEnabled startup preference.
+    bool startNetwork();
+    bool stopNetwork();
     QJsonObject featureStatus() const;
 
     const Options& options() const;
@@ -117,7 +120,6 @@ public:
 
 private:
     void applyConfig(); // push current config values into the services
-    void stopNetwork(); // immediate master-gate shutdown; re-enable needs restart
     void wireSignals(); // connect cross-service signals
 
     struct Private;

@@ -169,6 +169,8 @@ public:
     // workers read and write the database, so they must be gone before Manticore
     // is stopped.
     void shutdown();
+    // Cancel only peer-facing work; local export/import remains independent.
+    void stopNetworkTransfers();
 
     bool isBusy() const;
     Status status() const;

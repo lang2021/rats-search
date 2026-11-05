@@ -618,8 +618,45 @@ void DownloadService::enableMonitoring()
 void DownloadService::suspendForNetworkStop()
 {
     updateTimer_->stop();
-    QMutexLocker lock(&mutex_);
-    downloads_.clear();
+    const QVector<Download> snapshot = allDownloads();
+    for (const Download& entry : snapshot) {
+        // Stop pieces before the Node disappears. Preserve the last observed
+        // counters and every row, including manually paused tasks.
+        engine_->pause(entry.hash);
+        const net::TorrentSnapshot live = engine_->status(entry.hash);
+        engine_->saveResumeData(entry.hash);
+        QMutexLocker lock(&mutex_);
+        auto it = downloads_.find(entry.hash);
+        if (it == downloads_.end()) continue;
+        if (live.exists) {
+            it->downloadedBytes = live.downloaded;
+            it->progress = live.progress;
+            it->peersConnected = 0;
+            if (live.totalSize > 0) it->totalSize = live.totalSize;
+            it->completed = it->completed || live.isComplete;
+        }
+        it->paused = true;
+        it->downloadSpeed = 0;
+    }
+    suspended_ = !snapshot.isEmpty();
+}
+
+bool DownloadService::reattachAfterNetworkStart()
+{
+    if (!suspended_) return true;
+    if (!isReady()) return false;
+    bool allAttached = true;
+    for (const Download& entry : allDownloads()) {
+        // No loadSession here: runtime stop is not permission to resume an
+        // existing task, even if it was active before the network went down.
+        if (engine_->status(entry.hash).exists) continue;
+        if (!engine_->addMagnetResumed(entry.hash, entry.savePath, true)) {
+            qWarning() << "DownloadService: could not reattach paused task" << entry.hash.left(8);
+            allAttached = false;
+        }
+    }
+    suspended_ = !allAttached;
+    return allAttached;
 }
 
 // ============================================================================

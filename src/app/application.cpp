@@ -36,6 +36,7 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QThread>
 
 namespace rats::app {
 
@@ -46,6 +47,8 @@ struct Application::Private {
     bool running = false;
     bool downloadSessionLoaded = false;
     QString networkError;
+    QString crawlerError;
+    enum class NetworkState { Stopped, Starting, Running, Stopping, Failed } networkState = NetworkState::Stopped;
 
     // Adapters (owned, constructed in dependency order)
     std::unique_ptr<ConfigStore> config;
@@ -166,7 +169,7 @@ Application::~Application()
 void Application::applyConfig()
 {
     ConfigStore* c = d_->config.get();
-    const bool network = c->networkEnabled() && d_->transport->isRunning();
+    const bool network = d_->transport->isRunning();
     // A user may enable or disable session restore while the network is already
     // running. Keep shutdown persistence aligned with the current choice; never
     // load an old session as a side effect of changing this setting at runtime.
@@ -211,20 +214,20 @@ void Application::applyConfig()
     d_->searchHistory->setEnabled(c->searchHistoryEnabled());
     d_->updates->setNetworkAllowed(network);
 
-    if (d_->running && !c->networkEnabled() && d_->transport->isRunning()) {
-        stopNetwork();
-        return;
-    }
-
     // Reflect runtime toggles of the crawler and replication. Only act once the
     // subsystems are up (applyConfig also runs at construction, before start(),
     // where start() itself does the initial launch). start()/stop() are
     // idempotent.
     if (d_->running && network) {
-        if (c->indexerEnabled() || d_->options.forceSpider)
-            d_->crawler->start();
-        else
+        if (c->indexerEnabled() || d_->options.forceSpider) {
+            if (!d_->crawler->start())
+                d_->crawlerError = QStringLiteral("DHT crawler could not start; check DHT and BT status");
+            else
+                d_->crawlerError.clear();
+        } else {
             d_->crawler->stop();
+            d_->crawlerError.clear();
+        }
 
         if (c->p2pReplication())
             d_->replication->start();
@@ -290,24 +293,10 @@ bool Application::start()
     }
 
     d_->feed->load();
-    if (d_->config->networkEnabled()) {
-        if (d_->transport->start()) {
-            applyConfig();
-            d_->downloads->enableMonitoring();
-            if (d_->config->indexerEnabled() || d_->options.forceSpider)
-                d_->crawler->start();
-            if (d_->config->p2pReplication())
-                d_->replication->start();
-            // Session restore resumes downloads and completed torrents (seeding).
-            // It requires its own explicit opt-in, separate from the network gate.
-            if (d_->config->resumeBtSession()) {
-                d_->downloads->loadSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
-                d_->downloadSessionLoaded = true;
-            }
-        } else {
-            d_->networkError = QStringLiteral("P2P transport failed to start");
-            qWarning() << "[Application]" << d_->networkError;
-        }
+    d_->running = true;
+    if (d_->config->networkEnabled() && startNetwork() && d_->config->resumeBtSession()) {
+        // Only the initial program startup may load a persisted BT session.
+        d_->downloads->loadSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
     }
 
     // Background (resumable) migrations.
@@ -324,17 +313,14 @@ bool Application::start()
         if (!d_->apiServer->start(d_->config->httpPort(), -1,
                 d_->options.apiBindAddress.isEmpty() ? QStringLiteral("127.0.0.1") : d_->options.apiBindAddress)) {
             qCritical() << "[Application] HTTP/WebSocket API failed to start";
-            d_->crawler->stop();
-            d_->trackers->stop();
-            d_->replication->stop();
+            stopNetwork();
             d_->databaseSync->shutdown();
-            d_->transport->stop();
             d_->manticore->stop();
+            d_->running = false;
             return false;
         }
     }
 
-    d_->running = true;
     return true;
 }
 
@@ -348,23 +334,63 @@ void Application::stop()
     // Stop the crawler (the source of new torrents) and the tracker scrapers early
     // so no fresh tracker requests are issued during shutdown, and in-flight
     // announces / HTTP requests are drained rather than left blocking teardown.
-    d_->crawler->stop();
-    d_->trackers->stop();
-    if (d_->downloadSessionLoaded)
-        d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
+    stopNetwork();
     d_->feed->save();
-    d_->replication->stop();
     // The sync worker reads/writes the database on its own thread; it has to be
     // gone before Manticore is torn down under it.
     d_->databaseSync->shutdown();
-    d_->transport->stop();
     d_->manticore->stop();
 
     d_->running = false;
 }
 
-void Application::stopNetwork()
+bool Application::startNetwork()
 {
+    if (QThread::currentThread() != thread() || !d_->running ||
+        d_->networkState == Private::NetworkState::Starting ||
+        d_->networkState == Private::NetworkState::Stopping)
+        return false;
+    if (d_->transport->isRunning()) return true;
+
+    d_->networkState = Private::NetworkState::Starting;
+    d_->networkError.clear();
+    d_->crawlerError.clear();
+    // Preferences and CLI port overrides are read on every fresh Node creation.
+    d_->transport->setListenOptions(
+        d_->options.p2pPort > 0 ? d_->options.p2pPort : d_->config->p2pPort(),
+        d_->options.dhtPort > 0 ? d_->options.dhtPort : d_->config->dhtPort(),
+        d_->options.maxPeers > 0 ? d_->options.maxPeers : d_->config->p2pConnections());
+    d_->transport->setIndependentDirect(d_->config->independentDirect());
+    applyConfig();
+    if (!d_->transport->start()) {
+        d_->transport->stop();
+        d_->networkError = d_->transport->lastStartError();
+        if (d_->networkError.isEmpty()) d_->networkError = QStringLiteral("P2P transport failed to start");
+        d_->networkState = Private::NetworkState::Failed;
+        qWarning() << "[Application] network startup failed:" << d_->networkError;
+        return false;
+    }
+
+    d_->networkState = Private::NetworkState::Running;
+    applyConfig(); // permissions and sharing are applied before any task is attached
+    if (!d_->downloads->reattachAfterNetworkStart())
+        d_->networkError = QStringLiteral("Some paused BT tasks could not be reattached");
+    d_->downloads->enableMonitoring();
+    return true;
+}
+
+bool Application::stopNetwork()
+{
+    if (QThread::currentThread() != thread() ||
+        d_->networkState == Private::NetworkState::Starting ||
+        d_->networkState == Private::NetworkState::Stopping)
+        return false;
+    if (!d_->transport->isRunning()) {
+        d_->networkState = Private::NetworkState::Stopped;
+        return true;
+    }
+    d_->networkState = Private::NetworkState::Stopping;
+    d_->apiRouter->cancelRemoteSearches(QStringLiteral("P2P network stopping"));
     d_->crawler->stop();
     d_->trackers->stop();
     d_->replication->stop();
@@ -372,15 +398,17 @@ void Application::stopNetwork()
     d_->databaseSync->setPeerSyncEnabled(false);
     d_->peers->setDatabaseSharing(false);
     d_->peers->setIndexSharingEnabled(false);
-    if (d_->databaseSync->status().operation == service::DatabaseSyncService::Operation::PeerPull)
-        d_->databaseSync->cancel();
-    if (d_->downloadSessionLoaded) {
-        d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
-        d_->downloadSessionLoaded = false;
-    }
+    d_->databaseSync->stopNetworkTransfers();
     d_->downloads->suspendForNetworkStop();
+    if (d_->downloadSessionLoaded)
+        d_->downloads->saveSession(d_->options.dataDirectory + QStringLiteral("/torrents_session.json"));
+    d_->downloadSessionLoaded = false;
+    d_->engine->setFileTransferPermissions(false, false);
     d_->transport->stop();
+    d_->updates->setNetworkAllowed(false);
+    d_->networkState = Private::NetworkState::Stopped;
     qInfo() << "[Application] network features stopped; local search remains available";
+    return true;
 }
 
 QJsonObject Application::featureStatus() const
@@ -395,8 +423,12 @@ QJsonObject Application::featureStatus() const
     return QJsonObject {
         { "networkDesired", d_->config->networkEnabled() },
         { "networkRunning", actual },
-        { "restartRequired", d_->running && d_->config->networkEnabled() &&
-            (!actual || (directSupported && d_->config->independentDirect() != d_->transport->independentDirectActive()) ||
+        { "networkState", d_->networkState == Private::NetworkState::Starting ? "starting" :
+            d_->networkState == Private::NetworkState::Stopping ? "stopping" :
+            d_->networkState == Private::NetworkState::Failed ? "failed" :
+            actual ? "running" : "stopped" },
+        { "restartRequired", actual &&
+            ((directSupported && d_->config->independentDirect() != d_->transport->independentDirectActive()) ||
                 d_->config->mdnsEnabled() != d_->transport->isMdnsRunning()) },
         { "dhtRunning", d_->transport->isDhtRunning() },
         { "independentDirectSupported", directSupported },
@@ -420,6 +452,7 @@ QJsonObject Application::featureStatus() const
         { "remoteSearchRunning", actual && d_->config->remoteSearchEnabled() },
         { "peerCount", d_->transport->peerCount() },
         { "lastError", d_->networkError },
+        { "crawlerLastError", d_->crawlerError },
     };
 }
 

@@ -130,13 +130,20 @@ bool Crawler::start()
 
 void Crawler::stop()
 {
+    // Discard requests belonging to the old Node even if the crawler was not
+    // fully started. A queued callback still carries its old generation.
+    ++generation_;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        std::queue<MetadataRequest> empty;
+        metadataQueue_.swap(empty);
+    }
     if (!running_) {
         return;
     }
 
     qInfo() << "Stopping DHT crawler...";
     running_ = false;
-    ++generation_; // invalidate announces and metadata completions already queued
 
     walkTimer_->stop();
     ignoreTimer_->stop();
