@@ -54,6 +54,15 @@ export const routes: Routes = [
     ],
   },
   {
+    path: "console",
+    loadComponent: () =>
+      import("./dashboard/dashboard.component").then((c) => c.DashboardComponent),
+    children: [
+      { path: "settings", loadComponent: () =>
+          import("./rats/settings.component").then((c) => c.SettingsComponent) },
+    ],
+  },
+  {
     path: "**",
     loadComponent: () =>
       import("./not-found/not-found.component").then(

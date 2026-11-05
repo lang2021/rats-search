@@ -5,3 +5,4 @@ export const graphqlEndpoint =
   ":" +
   window.location.port +
   "/graphql";
+export const ratsApiBaseUrl = "";

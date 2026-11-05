@@ -364,11 +364,7 @@
                                 </div>
                                 <div class="setting-group">
                                     <h3>{{ t('settings.p2pNetwork') }}</h3>
-                                    <div class="setting-row">
-                                        <label>
-                                            <input type="checkbox" v-model="config.p2p"> {{ t('settings.enableP2p') }}
-                                        </label>
-                                    </div>
+                                    <div class="setting-hint">Shared network runtime controls and actual status are in the <a href="/console/settings">new console settings</a>.</div>
                                     <div class="setting-row">
                                         <label>{{ t('settings.maxConnections') }}</label>
                                         <input type="number" v-model.number="config.p2pConnections" min="10" max="1000">
