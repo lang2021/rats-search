@@ -104,4 +104,7 @@ app-paginator {
 .remote-search-title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .remote-search-title small { display: block; color: var(--rs-muted, #888); margin-top: 4px; }
 .remote-search-row a { color: var(--rs-accent, inherit); }
+.remote-search-subheading { margin: 0; padding: 10px 16px; border-top: 1px solid var(--rs-border, #777); color: var(--rs-accent, inherit); font-size: 11px; letter-spacing: .12em; }
+.remote-search-candidates { border-top: 1px solid var(--rs-border, #777); }
+.remote-search-candidates .remote-search-subheading { border-top: 0; }
 @media (max-width: 700px) { .remote-search-row { grid-template-columns: minmax(0, 1fr) 90px; } .remote-search-row > span { display: none; } }

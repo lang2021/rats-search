@@ -95,12 +95,24 @@ private slots:
             ++webSearchRequests;
             const std::string id = request.value("searchId", std::string());
             const std::string text = request.value("text", std::string());
-            if (text == "silent") return;
+            if (text.rfind("silent", 0) == 0) return;
+            if (text == "flood") {
+                QMetaObject::invokeMethod(QCoreApplication::instance(), [messages]() {
+                    messages->send("searchTorrent_response", librats::Json {
+                        { "hash", "invalid" }, { "name", "flood invalid hash" } });
+                    for (int i = 0; i < 120; ++i) {
+                        messages->send("searchTorrent_response", librats::Json {
+                            { "hash", QString("%1").arg(i, 40, 16, QLatin1Char('0')).toStdString() },
+                            { "name", "flood result " + std::to_string(i) } });
+                    }
+                }, Qt::QueuedConnection);
+                return;
+            }
             if (text == "legacyonly") {
                 if (request.value("query", std::string()) == text) ++legacyRequests;
                 QMetaObject::invokeMethod(QCoreApplication::instance(), [messages]() {
                     messages->send("searchTorrent_response", librats::Json {
-                        { "hash", std::string(40, 'c') }, { "name", "legacy-only result" } });
+                        { "hash", std::string(40, 'c') }, { "name", "legacyonly result" } });
                 }, Qt::QueuedConnection);
                 return;
             }
@@ -117,7 +129,7 @@ private slots:
         });
         messages->on("searchFiles", [messages](const librats::PeerId&, const librats::Json& request) {
             const std::string text = request.value("text", std::string());
-            if (text == "silent" || text == "legacyonly") return;
+            if (text.rfind("silent", 0) == 0 || text == "legacyonly" || text == "flood") return;
             const std::string id = request.value("searchId", std::string());
             QMetaObject::invokeMethod(QCoreApplication::instance(), [messages, id]() {
                 messages->send("searchFiles_response", librats::Json {
@@ -143,6 +155,14 @@ private slots:
 
         const QString hash(40, QLatin1Char('a'));
         QSignalSpy remoteHits(app.peerApi(), &rats::peer::PeerApi::remoteSearchResults);
+        QSignalSpy apiEvents(app.api(), &rats::rest::ApiRouter::event);
+        const auto eventCount = [&apiEvents](const QString& name) {
+            int count = 0;
+            for (const QList<QVariant>& args : apiEvents) {
+                if (args.at(0).toString() == name) ++count;
+            }
+            return count;
+        };
         const librats::Json searchHit { { "hash", hash.toStdString() }, { "name", "loopback result" } };
         messages->send("searchTorrent_response", searchHit);
         QTest::qWait(200);
@@ -183,28 +203,63 @@ private slots:
         rats::Result remote;
         app.api()->call("search.remote", { { "query", "controlled" }, { "searchId", searchId } },
             [&](const rats::Result& result) { remote = result; remoteDone = true; });
-        QTRY_VERIFY_WITH_TIMEOUT(remoteDone, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(eventCount(QStringLiteral("remoteSearchResults")) > 0, 2000);
+        QVERIFY(!remoteDone); // confirmed hits stream before the response window closes
+        QTRY_VERIFY_WITH_TIMEOUT(remoteDone, 7500);
         QVERIFY(remote.ok());
         const QJsonArray items = remote.data().toObject()["items"].toArray();
         QCOMPARE(items.size(), 1); // same hash from torrent and file responses
         QCOMPARE(items.first().toObject()["hash"].toString(), QString(40, QLatin1Char('b')));
         QVERIFY(items.first().toObject()["remote"].toBool());
+        QCOMPARE(remote.data().toObject()["candidates"].toArray().size(), 0);
+        QVERIFY(eventCount(QStringLiteral("remoteSearchResults")) > 0);
         QVERIFY(!app.search()->get(QString(40, QLatin1Char('b')), false).has_value());
         QVERIFY(webSearchRequests.load() > 0);
 
         // A legacy peer receives the unchanged request and answers without an
-        // ID. PeerApi sees the reply, but Web cannot safely attribute it.
         const int seenBeforeLegacy = remoteHits.size();
         bool legacyDone = false;
         rats::Result legacy;
         const QString legacyId = QStringLiteral("8462e8ae-2ba1-419a-8c08-cf5f293eb244");
         app.api()->call("search.remote", { { "query", "legacyonly" }, { "searchId", legacyId } },
             [&](const rats::Result& result) { legacy = result; legacyDone = true; });
-        QTRY_VERIFY_WITH_TIMEOUT(legacyDone, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(eventCount(QStringLiteral("remoteSearchCandidates")) > 0, 2000);
+        QVERIFY(!legacyDone); // old-protocol candidates also stream immediately
+        QTRY_VERIFY_WITH_TIMEOUT(legacyDone, 7500);
         QCOMPARE(legacyRequests.load(), 1);
         QVERIFY(remoteHits.size() > seenBeforeLegacy);
         QVERIFY(legacy.ok());
         QCOMPARE(legacy.data().toObject()["items"].toArray().size(), 0);
+        const QJsonArray legacyCandidates = legacy.data().toObject()["candidates"].toArray();
+        QCOMPARE(legacyCandidates.size(), 1);
+        QCOMPARE(legacyCandidates.first().toObject()["hash"].toString(), QString(40, QLatin1Char('c')));
+        QVERIFY(!legacyCandidates.first().toObject()["peer"].toString().isEmpty());
+        QVERIFY(eventCount(QStringLiteral("remoteSearchCandidates")) > 0);
+        for (const QList<QVariant>& args : apiEvents) {
+            if (args.at(0).toString() == QStringLiteral("remoteSearchCandidates"))
+                QCOMPARE(args.at(1).toJsonObject()["candidateSessionId"].toString(), legacyId);
+        }
+        QVERIFY(!app.search()->get(QString(40, QLatin1Char('c')), false).has_value());
+
+        // Concurrent Web windows must not receive each other's unverified
+        // candidate event, even though neither event proves protocol ownership.
+        const QString applesId = QStringLiteral("22729cba-40fa-4df6-a553-d132041c3964");
+        const QString orangesId = QStringLiteral("f5dbe5ea-9c07-4272-9e3b-85ee50cfdd3e");
+        app.api()->call("search.remote", { { "query", "silent apples" }, { "searchId", applesId } },
+            [&](const rats::Result&) {});
+        app.api()->call("search.remote", { { "query", "silent oranges" }, { "searchId", orangesId } },
+            [&](const rats::Result&) {});
+        const int eventsBeforeConcurrent = apiEvents.size();
+        messages->send("searchTorrent_response", librats::Json {
+            { "hash", std::string(40, 'a') }, { "name", "silent apples result" } });
+        QTRY_VERIFY_WITH_TIMEOUT(apiEvents.size() > eventsBeforeConcurrent, 2000);
+        for (int i = eventsBeforeConcurrent; i < apiEvents.size(); ++i) {
+            const QList<QVariant>& args = apiEvents.at(i);
+            if (args.at(0).toString() == QStringLiteral("remoteSearchCandidates"))
+                QCOMPARE(args.at(1).toJsonObject()["candidateSessionId"].toString(), applesId);
+        }
+        app.api()->call("search.cancel", { { "searchId", applesId } }, [&](const rats::Result&) {});
+        app.api()->call("search.cancel", { { "searchId", orangesId } }, [&](const rats::Result&) {});
 
         // A timed-out empty request finishes, and later legacy packets have no
         // reliable way to distinguish the old request from a newer one.
@@ -213,9 +268,29 @@ private slots:
         app.api()->call("search.remote", { { "query", "silent" },
             { "searchId", "8343dbe2-2783-4af2-ae9a-35ed72c46631" } },
             [&](const rats::Result& result) { silent = result; silentDone = true; });
-        QTRY_VERIFY_WITH_TIMEOUT(silentDone, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(silentDone, 7500);
         QVERIFY(silent.ok());
         QCOMPARE(silent.data().toObject()["items"].toArray().size(), 0);
+        QCOMPARE(silent.data().toObject()["candidates"].toArray().size(), 0);
+        const int candidatesBeforeLate = eventCount(QStringLiteral("remoteSearchCandidates"));
+        messages->send("searchTorrent_response", librats::Json {
+            { "hash", std::string(40, 'e') }, { "name", "silent late reply" } });
+        QTest::qWait(150);
+        QCOMPARE(eventCount(QStringLiteral("remoteSearchCandidates")), candidatesBeforeLate);
+
+        bool revokedDone = false;
+        rats::Result revoked;
+        app.api()->call("search.remote", { { "query", "silent" },
+            { "searchId", "15b14661-1c8a-4fcb-bcd9-f07180bfb0a2" } },
+            [&](const rats::Result& result) { revoked = result; revokedDone = true; });
+        app.config()->setRemoteSearchEnabled(false);
+        QVERIFY(revokedDone);
+        QVERIFY(!revoked.ok());
+        messages->send("searchTorrent_response", librats::Json {
+            { "hash", std::string(40, 'e') }, { "name", "silent revoked reply" } });
+        QTest::qWait(150);
+        QCOMPARE(eventCount(QStringLiteral("remoteSearchCandidates")), candidatesBeforeLate);
+        app.config()->setRemoteSearchEnabled(true);
 
         const QString cancelledId = QStringLiteral("db8e80e1-e9b6-45a0-900a-81b3c82c2fe5");
         bool cancelledDone = false;
@@ -226,6 +301,10 @@ private slots:
             [&](const rats::Result& result) { QVERIFY(result.data().toObject()["cancelled"].toBool()); });
         QVERIFY(cancelledDone);
         QVERIFY(!cancelledResult.ok());
+        messages->send("searchTorrent_response", librats::Json {
+            { "hash", std::string(40, 'e') }, { "name", "controlled after cancel" } });
+        QTest::qWait(150);
+        QCOMPARE(eventCount(QStringLiteral("remoteSearchCandidates")), candidatesBeforeLate);
         bool nextDone = false;
         rats::Result next;
         app.api()->call("search.remote", { { "query", "controlled" },
@@ -234,12 +313,25 @@ private slots:
         messages->send("searchTorrent_response", librats::Json {
             { "hash", std::string(40, 'e') }, { "searchId", cancelledId.toStdString() } });
         messages->send("searchTorrent_response", librats::Json {
-            { "hash", std::string(40, 'f') }, { "name", "late legacy result" } });
-        QTRY_VERIFY_WITH_TIMEOUT(nextDone, 5000);
+            { "hash", std::string(40, 'f') }, { "name", "controlled late legacy result" } });
+        QTRY_VERIFY_WITH_TIMEOUT(nextDone, 7500);
         QVERIFY(next.ok());
         QCOMPARE(next.data().toObject()["items"].toArray().size(), 1);
         QCOMPARE(next.data().toObject()["items"].toArray().first().toObject()["hash"].toString(),
             QString(40, QLatin1Char('b')));
+        QCOMPARE(next.data().toObject()["candidates"].toArray().size(), 1);
+        QCOMPARE(next.data().toObject()["candidates"].toArray().first().toObject()["hash"].toString(),
+            QString(40, QLatin1Char('f'))); // never promoted into confirmed items
+
+        bool floodDone = false;
+        rats::Result flood;
+        app.api()->call("search.remote", { { "query", "flood" },
+            { "searchId", "3b9df9f6-8ee2-4b04-ad8d-8774599d479d" } },
+            [&](const rats::Result& result) { flood = result; floodDone = true; });
+        QTRY_VERIFY_WITH_TIMEOUT(floodDone, 7500);
+        QVERIFY(flood.ok());
+        QCOMPARE(flood.data().toObject()["items"].toArray().size(), 0);
+        QCOMPARE(flood.data().toObject()["candidates"].toArray().size(), 100);
         app.config()->setRemoteSearchEnabled(false);
 
         rats::domain::Torrent shared;

@@ -234,37 +234,111 @@ void peerLookup(ApiRouter* ctx, app::Application* app, const QString& peerId, co
 struct RemoteSearchSession {
     QTimer* timer = nullptr;
     ResultCallback respond;
+    QString query;
     QJsonArray results;
     QHash<QString, int> positions;
+    QJsonArray candidates;
+    QHash<QString, int> candidatePositions;
     int peers = 0;
 };
 
-void ApiRouter::collectRemoteSearchResults(const QString& searchId, const QJsonArray& torrents)
+namespace {
+
+constexpr int remoteResultLimit = 100;
+
+QJsonObject safeRemoteHit(const QJsonObject& raw)
 {
-    auto session = remoteSearches_.value(searchId);
-    if (!session) return; // Includes replies from older peers without a request ID.
-
-    for (const QJsonValue& value : torrents) {
-        QJsonObject item = value.toObject();
-        const QString hash = infohash::normalize(item["hash"].toString());
-        if (!infohash::isValid(hash)) continue;
-        item["hash"] = hash;
-        item.remove("searchId");
-        item.remove("query");
-        item.remove("text");
-
-        auto existing = session->positions.constFind(hash);
-        if (existing != session->positions.constEnd()) {
-            // Prefer a full torrent-name match over a file-only match.
-            if (session->results.at(existing.value()).toObject()["isFileMatch"].toBool()
-                && !item["isFileMatch"].toBool())
-                session->results.replace(existing.value(), item);
-            continue;
-        }
-        if (session->results.size() >= 100) continue;
-        session->positions.insert(hash, session->results.size());
-        session->results.append(item);
+    const QString hash = infohash::normalize(raw["hash"].toString());
+    const QString name = raw["name"].toString().trimmed();
+    const QString peer = raw["peer"].toString();
+    if (!infohash::isValid(hash) || name.isEmpty() || peer.isEmpty()) return {};
+    QJsonObject item {
+        { "hash", hash }, { "name", name.left(512) },
+        { "peer", peer }, { "remote", true },
+        { "isFileMatch", raw["isFileMatch"].toBool() },
+        { "size", qMax<qint64>(0, raw["size"].toVariant().toLongLong()) },
+        { "files", qMax(0, raw["files"].toInt()) },
+        { "seeders", qMax(0, raw["seeders"].toInt()) },
+        { "leechers", qMax(0, raw["leechers"].toInt()) },
+    };
+    const QJsonArray rawPaths = raw.contains("matchingPaths")
+        ? raw["matchingPaths"].toArray() : raw["path"].toArray();
+    QJsonArray paths;
+    for (int i = 0; i < qMin(rawPaths.size(), 12); ++i) {
+        const QString path = rawPaths.at(i).toString().left(256);
+        if (!path.isEmpty()) paths.append(path);
     }
+    if (!paths.isEmpty()) item["matchingPaths"] = paths;
+    return item;
+}
+
+bool plausibleLegacyHit(const QJsonObject& raw, const QString& query)
+{
+    // This is a display heuristic, never a protocol-level association.
+    QString searchable = raw["name"].toString().left(512);
+    const QJsonArray paths = raw.contains("matchingPaths")
+        ? raw["matchingPaths"].toArray() : raw["path"].toArray();
+    for (int i = 0; i < qMin(paths.size(), 12); ++i)
+        searchable += QLatin1Char(' ') + paths.at(i).toString().left(256);
+    const QStringList words = query.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    for (const QString& word : words) {
+        if (!searchable.contains(word, Qt::CaseInsensitive)) return false;
+    }
+    return !words.isEmpty();
+}
+
+bool insertRemoteHit(QJsonArray& results, QHash<QString, int>& positions, const QJsonObject& item)
+{
+    const QString hash = item["hash"].toString();
+    auto existing = positions.constFind(hash);
+    if (existing != positions.constEnd()) {
+        // Prefer the torrent-name match over a file-only match.
+        if (results.at(existing.value()).toObject()["isFileMatch"].toBool()
+            && !item["isFileMatch"].toBool()) {
+            results.replace(existing.value(), item);
+            return true;
+        }
+        return false;
+    }
+    if (results.size() >= remoteResultLimit) return false;
+    positions.insert(hash, results.size());
+    results.append(item);
+    return true;
+}
+
+} // namespace
+
+QJsonArray ApiRouter::collectRemoteSearchResults(const QString& searchId, const QJsonArray& torrents)
+{
+    if (!app_->config()->remoteSearchEnabled()) return {};
+    auto session = remoteSearches_.value(searchId);
+    if (!session) return {};
+
+    QJsonArray accepted;
+    for (const QJsonValue& value : torrents) {
+        const QJsonObject item = safeRemoteHit(value.toObject());
+        if (!item.isEmpty() && insertRemoteHit(session->results, session->positions, item))
+            accepted.append(item);
+    }
+    return accepted;
+}
+
+QHash<QString, QJsonArray> ApiRouter::collectLegacySearchCandidates(const QJsonArray& torrents)
+{
+    if (!app_->config()->remoteSearchEnabled() || remoteSearches_.isEmpty()) return {};
+    QHash<QString, QJsonArray> accepted;
+    for (const QJsonValue& value : torrents) {
+        const QJsonObject raw = value.toObject();
+        const QJsonObject item = safeRemoteHit(raw);
+        if (item.isEmpty()) continue;
+        for (auto it = remoteSearches_.cbegin(); it != remoteSearches_.cend(); ++it) {
+            const auto& session = it.value();
+            if (plausibleLegacyHit(raw, session->query)
+                && insertRemoteHit(session->candidates, session->candidatePositions, item))
+                accepted[it.key()].append(item);
+        }
+    }
+    return accepted;
 }
 
 bool ApiRouter::finishRemoteSearch(const QString& searchId, const QString& error)
@@ -277,7 +351,8 @@ bool ApiRouter::finishRemoteSearch(const QString& searchId, const QString& error
         session->respond(Result::failure(error));
     } else {
         session->respond(Result::success(QJsonObject {
-            { "items", session->results }, { "peers", session->peers }, { "windowExpired", true } }));
+            { "items", session->results }, { "candidates", session->candidates },
+            { "peers", session->peers }, { "windowExpired", true } }));
     }
     return true;
 }
@@ -339,16 +414,21 @@ void ApiRouter::wireEvents()
         emit event(QStringLiteral("configChanged"), data);
     });
     if (app_->peerApi()) {
-        connect(app_->peerApi(), &peer::PeerApi::remoteSearchResults, this,
-            [this](const QString& searchId, const QJsonArray& torrents) {
-                collectRemoteSearchResults(searchId, torrents);
+        const auto routeSearchHits = [this](const QString& searchId, const QJsonArray& torrents) {
+            if (searchId.isEmpty()) {
+                const auto candidates = collectLegacySearchCandidates(torrents);
+                for (auto it = candidates.cbegin(); it != candidates.cend(); ++it)
+                    emit event(QStringLiteral("remoteSearchCandidates"),
+                        QJsonObject { { "candidateSessionId", it.key() }, { "torrents", it.value() } });
+                return;
+            }
+            const QJsonArray confirmed = collectRemoteSearchResults(searchId, torrents);
+            if (!confirmed.isEmpty())
                 emit event(QStringLiteral("remoteSearchResults"),
-                    QJsonObject { { "searchId", searchId }, { "torrents", torrents } });
-            });
-        connect(app_->peerApi(), &peer::PeerApi::remoteFileSearchResults, this,
-            [this](const QString& searchId, const QJsonArray& torrents) {
-                collectRemoteSearchResults(searchId, torrents);
-            });
+                    QJsonObject { { "searchId", searchId }, { "torrents", confirmed } });
+        };
+        connect(app_->peerApi(), &peer::PeerApi::remoteSearchResults, this, routeSearchHits);
+        connect(app_->peerApi(), &peer::PeerApi::remoteFileSearchResults, this, routeSearchHits);
     }
     connect(app_->transport(), &net::P2PTransport::stopped, this, [this]() {
         for (const QString& id : remoteSearches_.keys())
@@ -427,13 +507,14 @@ void ApiRouter::registerMethods()
 
         auto session = std::make_shared<RemoteSearchSession>();
         session->respond = respond;
+        session->query = query;
         session->peers = transport->peerCount();
         session->timer = new QTimer(this);
         session->timer->setSingleShot(true);
         connect(session->timer, &QTimer::timeout, this,
             [this, searchId]() { finishRemoteSearch(searchId); });
         remoteSearches_.insert(searchId, session);
-        session->timer->start(2500);
+        session->timer->start(5000);
 
         QJsonObject message {
             { "searchId", searchId }, { "query", query }, { "text", query },

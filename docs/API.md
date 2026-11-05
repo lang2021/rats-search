@@ -186,13 +186,19 @@ the `Authorization: Bearer` header; the query and token must not be placed in th
 
 The `remoteSearch` permission must be enabled and at least one Rats peer must be
 connected. This action is separate from permission to provide the local index.
-The query must contain 3–200 characters. The server waits at most 2.5 seconds,
-then returns `{"items": [...], "peers": 1, "windowExpired": true}`. Results
-include their source `peer`, are deduplicated by hash, and are not automatically
-saved to the local index. Peers that do not echo the optional `searchId` in their
-responses cannot be safely associated with this request, so the Web API does not
-include those results. `search.cancel` accepts the same `searchId` in a POST JSON
-body and ends the pending request.
+The query must contain 3–200 characters. The server waits at most 5 seconds,
+then returns `{"items": [...], "candidates": [...], "peers": 1, "windowExpired": true}`.
+`items` contains responses that echo this request's `searchId`. Older peers
+omit that ID; their responses can only enter the separate `candidates` array
+after hash/source validation, keyword-based relevance filtering, and deduplication.
+This filtering is **not** proof that a candidate belongs to the current query:
+late replies to an earlier search can still appear here. Both arrays are capped
+at 100 items, retain the source `peer`, and are never automatically saved to the
+local index. Authenticated WebSocket events `remoteSearchResults` (with `searchId`)
+and `remoteSearchCandidates` (with `candidateSessionId` identifying only the
+current Web search window, **not** proving legacy response ownership) stream
+accepted hits during the window. `search.cancel` accepts the same `searchId` in a POST JSON body and
+ends the pending request.
 
 ---
 
@@ -955,7 +961,8 @@ Push events are broadcast to all connected WebSocket clients as `{ "event": name
 | `votesUpdated` | Vote counts for a torrent changed (local or remote vote) | `{ "hash": "…", "good": 3, "bad": 1 }` |
 | `feedUpdated` | The feed changed | `{ "feed": [ …torrent objects… ] }` |
 | `configChanged` | One or more config keys were written | The full config object plus `"changedKeys": ["filters.adultFilter"]` |
-| `remoteSearchResults` | A peer answered a P2P search | `{ "searchId": "…", "torrents": [ …torrent objects… ] }` |
+| `remoteSearchResults` | Validated, correlated P2P search hits during an active Web search | `{ "searchId": "…", "torrents": [ …torrent objects… ] }` |
+| `remoteSearchCandidates` | Unattributed old-protocol hits during an active Web search; keyword matching does not prove query ownership | `{ "torrents": [ …torrent objects… ] }` |
 | `torrentRemoveProgress` | Progress of a bulk `torrent.remove` | `{ "processed": 100, "removed": 98, "total": 500 }` |
 | `torrentCleanupProgress` | Progress of a `torrent.cleanup` sweep | `{ "scanned": 5000, "matched": 120, "total": 12045 }` |
 | `databaseSyncStarted` | The **local** export/import/pull began | The status object from `database.status` |

@@ -43,7 +43,8 @@ signals:
     void event(const QString& name, const QJsonObject& data);
 
 private:
-    void collectRemoteSearchResults(const QString& searchId, const QJsonArray& torrents);
+    QJsonArray collectRemoteSearchResults(const QString& searchId, const QJsonArray& torrents);
+    QHash<QString, QJsonArray> collectLegacySearchCandidates(const QJsonArray& torrents);
     bool finishRemoteSearch(const QString& searchId, const QString& error = {});
     void registerMethods();
     // Re-broadcast service-layer signals (download progress, votes, feed, config,

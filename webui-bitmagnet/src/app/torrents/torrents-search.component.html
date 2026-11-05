@@ -236,16 +236,17 @@
       @if (searchScope === "peers") {
         <section class="remote-search-panel" aria-label="Rats 节点搜索结果">
           <div class="remote-search-heading">
-            <div><h2>RATS 节点结果</h2><p>结果仅临时展示；打开单条详情时才按需获取并保存。旧节点未附请求标识的回复无法安全归属，暂不显示。</p></div>
+            <div><h2>RATS 节点结果</h2><p>结果陆续显示；只有打开单条详情时才按需获取并保存。</p></div>
             @if (remoteStatus === "loading") {
               <button mat-stroked-button type="button" (click)="cancelRemoteSearch()">取消远端搜索</button>
             }
           </div>
           <p class="remote-search-status" role="status">{{ remoteMessage || "输入关键词并点击搜索，才会向已连接节点发送关键词。" }}</p>
-          @if (remoteStatus === "done") {
-            <p class="remote-search-status">远端独有 {{ visibleRemoteResults.length }} 条；与本地重复 {{ remoteDuplicateCount }} 条，已合并去重。</p>
+          @if (remoteStatus === "done" || remoteResults.length || remoteCandidates.length) {
+            <p class="remote-search-status">已确认 {{ visibleRemoteResults.length }} 条；旧协议候选 {{ visibleRemoteCandidates.length }} 条；与本地重复的已确认结果 {{ remoteDuplicateCount }} 条。</p>
           }
           @if (visibleRemoteResults.length) {
+            <h3 class="remote-search-subheading">已确认属于本次搜索</h3>
             <div class="remote-search-list">
               @for (item of visibleRemoteResults; track item.hash) {
                 <div class="remote-search-row">
@@ -257,6 +258,24 @@
               }
             </div>
           }
+          <div class="remote-search-candidates">
+            <h3 class="remote-search-subheading">旧协议候选 · {{ visibleRemoteCandidates.length }}</h3>
+            <p class="remote-search-status">旧协议结果，无法严格确认查询归属。关键词匹配仅用于筛选可能相关的结果，迟到回复也可能属于之前的搜索。</p>
+            @if (visibleRemoteCandidates.length) {
+              <div class="remote-search-list">
+                @for (item of visibleRemoteCandidates; track item.hash) {
+                  <div class="remote-search-row">
+                    <div class="remote-search-title"><strong>{{ item.name }}</strong><small>RATS 节点 {{ item.peer?.slice(0, 8) || "未知" }} · 旧协议候选 · {{ item.isFileMatch ? "文件匹配" : "资源匹配" }}</small></div>
+                    <span>{{ item.size | filesize }}</span>
+                    <button mat-button type="button" (click)="openRemote(item)">查看详情</button>
+                    <a [href]="'magnet:?xt=urn:btih:' + item.hash" aria-label="复制或打开磁力链接">磁力链接</a>
+                  </div>
+                }
+              </div>
+            } @else if (remoteStatus === "done") {
+              <p class="remote-search-status">本次没有可展示的旧协议候选。</p>
+            }
+          </div>
         </section>
       }
     </mat-drawer-content>

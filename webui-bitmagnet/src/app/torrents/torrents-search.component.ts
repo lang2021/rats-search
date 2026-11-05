@@ -26,7 +26,8 @@ import * as generated from "../graphql/generated";
 import { intParam, stringListParam, stringParam } from "../util/query-string";
 import { AppModule } from "../app.module";
 import { DocumentTitleComponent } from "../layout/document-title.component";
-import { ratsCall, RatsTorrent } from "../rats/rats-api";
+import { ratsCall, RatsTorrent, requestRatsToken } from "../rats/rats-api";
+import { ratsApiBaseUrl } from "../../environments/environment";
 import { takeQueuedLocalSearch } from "../rats/search-navigation";
 import { IntEstimatePipe } from "../pipes/int-estimate.pipe";
 import { FilesizePipe } from "../pipes/filesize.pipe";
@@ -102,11 +103,13 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
   queryString = new FormControl("");
   searchScope: "local" | "peers" = "local";
   remoteResults: RatsTorrent[] = [];
+  remoteCandidates: RatsTorrent[] = [];
   remoteStatus: "idle" | "loading" | "done" | "error" | "cancelled" = "idle";
   remoteMessage = "";
   remotePeers = 0;
   private remoteAbort?: AbortController;
   private remoteSearchId?: string;
+  private remoteWs?: WebSocket;
   private remoteQuery = "";
 
   result = emptyResult;
@@ -203,6 +206,7 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
     if (scope === "local") {
       this.cancelRemoteSearch();
       this.remoteResults = [];
+      this.remoteCandidates = [];
       this.remoteStatus = "idle";
       this.remoteMessage = "";
     }
@@ -226,6 +230,8 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
     this.remoteSearchId = undefined;
     this.remoteAbort?.abort();
     this.remoteAbort = undefined;
+    this.remoteWs?.close();
+    this.remoteWs = undefined;
     if (id) void ratsCall("search.cancel", { searchId: id }).catch(() => {});
     if (this.remoteStatus === "loading") {
       this.remoteStatus = "cancelled";
@@ -237,6 +243,7 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
     if ((this.queryString.value ?? "").trim() !== this.remoteQuery) {
       this.cancelRemoteSearch();
       this.remoteResults = [];
+      this.remoteCandidates = [];
     }
   }
 
@@ -249,10 +256,18 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
     return this.remoteResults.length - this.visibleRemoteResults.length;
   }
 
+  get visibleRemoteCandidates(): RatsTorrent[] {
+    const seen = new Set([
+      ...this.result.items.map((item) => item.infoHash.toLowerCase()),
+      ...this.remoteResults.map((item) => item.hash.toLowerCase()),
+    ]);
+    return this.remoteCandidates.filter((item) => !seen.has(item.hash.toLowerCase()));
+  }
+
   async openRemote(item: RatsTorrent) {
     try {
       await ratsCall("torrent.get", { hash: item.hash, peer: item.peer, files: true });
-      await this.router.navigate(["../permalink", item.hash], { relativeTo: this.route });
+      await this.router.navigate(["/torrent", item.hash]);
     } catch (error) {
       this.remoteStatus = "error";
       this.remoteMessage = error instanceof Error ? error.message : "无法读取远端详情";
@@ -263,6 +278,7 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
   private async runRemoteSearch(query: string) {
     this.cancelRemoteSearch();
     this.remoteResults = [];
+    this.remoteCandidates = [];
     this.remoteQuery = query;
     if (query.length < 3) {
       this.remoteStatus = "error";
@@ -276,7 +292,9 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
     this.remoteStatus = "loading";
     this.remoteMessage = "正在查询已连接的 Rats 节点…";
     try {
-      const response = await ratsCall<{ items: RatsTorrent[]; peers: number; windowExpired: boolean }>(
+      await this.connectRemoteStream(id, controller.signal);
+      if (this.remoteSearchId !== id || controller.signal.aborted) return;
+      const response = await ratsCall<{ items: RatsTorrent[]; candidates: RatsTorrent[]; peers: number; windowExpired: boolean }>(
         "search.remote",
         {
           searchId: id,
@@ -288,13 +306,18 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
         controller.signal,
       );
       if (this.remoteSearchId !== id) return;
-      this.remoteResults = response.items;
+      this.mergeRemoteHits(response.items, false);
+      this.mergeRemoteHits(response.candidates ?? [], true);
       this.remotePeers = response.peers;
       this.remoteStatus = "done";
       this.remoteMessage = `查询窗口已结束 · 已连接 ${response.peers} 个节点`;
       this.changeDetector.markForCheck();
     } catch (error) {
       if (this.remoteSearchId !== id) return;
+      if (error instanceof Error && error.message.includes("permission disabled")) {
+        this.remoteResults = [];
+        this.remoteCandidates = [];
+      }
       this.remoteStatus = controller.signal.aborted ? "cancelled" : "error";
       this.remoteMessage = controller.signal.aborted
         ? "远端搜索已取消"
@@ -304,8 +327,69 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
       if (this.remoteSearchId === id) {
         this.remoteSearchId = undefined;
         this.remoteAbort = undefined;
+        this.remoteWs?.close();
+        this.remoteWs = undefined;
       }
     }
+  }
+
+  private async connectRemoteStream(id: string, signal: AbortSignal): Promise<void> {
+    const token = await requestRatsToken();
+    if (!token || signal.aborted || this.remoteSearchId !== id) return;
+    const base = ratsApiBaseUrl ? new URL(ratsApiBaseUrl) : location;
+    const port = Number(base.port || (base.protocol === "https:" ? 443 : 80)) + 1;
+    const url = `${base.protocol === "https:" ? "wss:" : "ws:"}//${base.hostname}:${port}`;
+    try {
+      const ws = new WebSocket(url);
+      this.remoteWs = ws;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve();
+        };
+        const timeout = setTimeout(() => { ws.close(); finish(); }, 1500);
+        ws.onopen = () => ws.send(JSON.stringify({ method: "auth", params: { token } }));
+        ws.onmessage = (message) => {
+          let frame: { event?: string; data?: { authenticated?: boolean; searchId?: string; candidateSessionId?: string; torrents?: RatsTorrent[] } };
+          try { frame = JSON.parse(String(message.data)); } catch { return; }
+          if (frame.data?.authenticated) { finish(); return; }
+          if (this.remoteSearchId !== id || signal.aborted || this.searchScope !== "peers") return;
+          if (frame.event === "remoteSearchResults" && frame.data?.searchId === id)
+            this.mergeRemoteHits(frame.data.torrents ?? [], false);
+          if (frame.event === "remoteSearchCandidates" && frame.data?.candidateSessionId === id)
+            this.mergeRemoteHits(frame.data?.torrents ?? [], true);
+        };
+        ws.onerror = finish;
+        ws.onclose = finish;
+        signal.addEventListener("abort", () => { ws.close(); finish(); }, { once: true });
+      });
+    } catch { /* The final HTTP response remains available without a live stream. */ }
+  }
+
+  private mergeRemoteHits(items: RatsTorrent[], candidate: boolean): void {
+    if (!Array.isArray(items)) return;
+    const target = candidate ? this.remoteCandidates : this.remoteResults;
+    for (const item of items.slice(0, 100)) {
+      if (!/^[0-9a-f]{40}$/i.test(item.hash ?? "") || !item.name || !item.peer) continue;
+      if (candidate && !this.plausibleCandidate(item)) continue;
+      const index = target.findIndex((existing) => existing.hash.toLowerCase() === item.hash.toLowerCase());
+      if (index >= 0) {
+        if (target[index].isFileMatch && !item.isFileMatch) target[index] = item;
+      } else if (target.length < 100) {
+        target.push(item);
+      }
+    }
+    this.changeDetector.markForCheck();
+  }
+
+  private plausibleCandidate(item: RatsTorrent): boolean {
+    const paths = (item as RatsTorrent & { matchingPaths?: string[] }).matchingPaths ?? [];
+    const text = [item.name, ...paths.slice(0, 12)].join(" ").toLowerCase();
+    return this.remoteQuery.toLowerCase().split(/\s+/).filter(Boolean)
+      .every((word) => text.includes(word));
   }
 }
 
