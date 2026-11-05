@@ -45,6 +45,22 @@ const settingLabels: Record<SettingKey, string> = {
   p2pReplicationServer: "提供 Feed 与随机索引",
 };
 
+const resettableDefaults: Partial<Config> = {
+  networkEnabled: true,
+  indexer: true,
+  remoteSearch: true,
+  indexExchange: true,
+  btFileDownload: true,
+  safeSearch: true,
+  p2pReplication: false,
+  p2pReplicationServer: false,
+  databaseSharing: false,
+  btFileUpload: false,
+  resumeBtSession: false,
+  mdns: false,
+  independentDirect: false,
+};
+
 type FeatureStatus = {
   networkDesired: boolean;
   networkRunning: boolean;
@@ -223,10 +239,16 @@ type P2pStats = { dhtNodes: number; peerCount: number };
         </mat-accordion>
 
         <p *ngIf="message" role="status" [class.attention]="messageIsError">{{ message }}</p>
+        <button mat-stroked-button (click)="requestResetDefaults()" [disabled]="controlsDisabled">恢复默认配置</button>
         <dialog *ngIf="pending as change" #confirmDialog class="confirm" aria-label="确认更改设置" (cancel)="cancelChange()">
           <span>{{ change.prompt }}</span>
           <button mat-flat-button color="primary" autofocus (click)="confirmChange()">确认更改</button>
           <button mat-button (click)="cancelChange()">取消</button>
+        </dialog>
+        <dialog *ngIf="pendingResetDefaults" #resetDialog class="confirm" aria-label="确认恢复默认配置" (cancel)="$event.preventDefault(); cancelResetDefaults()">
+          <span>将重置 13 项：开启远程搜索、普通索引查询应答、资源文件下载和安全搜索；关闭主动 Feed/随机索引同步、Feed 与随机索引提供、完整数据库共享、BT 上传与做种、BT 会话恢复、mDNS 和 DHT Independent Direct。并设置为下次启动程序时自动启动共享网络、下次启动共享网络时自动启动 DHT 采集。开启普通索引查询意味着允许其他 Rats 节点查询本机索引；允许文件下载意味着你明确添加下载任务后才可下载资源文件。以上网络和采集设置只改启动偏好，本次不会启动网络或 Crawler。其他设置、API 令牌、节点身份、数据库及下载文件保持不变。确认恢复？</span>
+          <button mat-flat-button color="primary" autofocus (click)="confirmResetDefaults()">恢复这 13 项</button>
+          <button mat-button (click)="cancelResetDefaults()">取消</button>
         </dialog>
         <dialog *ngIf="pendingRuntime as action" #runtimeDialog class="confirm" aria-label="确认网络操作" (cancel)="$event.preventDefault(); cancelRuntime()">
           <span>{{ action.prompt }}</span>
@@ -234,6 +256,7 @@ type P2pStats = { dhtNodes: number; peerCount: number };
           <button mat-button (click)="cancelRuntime()">取消</button>
         </dialog>
         <button *ngIf="retry as failed" mat-stroked-button (click)="retrySave()" [disabled]="saving">重试保存「{{ settingLabel(failed.key) }}」</button>
+        <button *ngIf="retryResetDefaults" mat-stroked-button (click)="retryReset()" [disabled]="saving">重试恢复默认配置</button>
         <button mat-button (click)="load()" [disabled]="saving || !!pending">刷新状态</button>
       </mat-card-content>
       <mat-card-content *ngIf="!config">{{
@@ -301,6 +324,7 @@ type P2pStats = { dhtNodes: number; peerCount: number };
 export class SettingsComponent implements OnInit, OnDestroy {
   @ViewChild("confirmDialog") confirmDialog?: ElementRef<HTMLDialogElement>;
   @ViewChild("runtimeDialog") runtimeDialog?: ElementRef<HTMLDialogElement>;
+  @ViewChild("resetDialog") resetDialog?: ElementRef<HTMLDialogElement>;
 
   config?: Config;
   confirmedConfig?: Config;
@@ -311,13 +335,15 @@ export class SettingsComponent implements OnInit, OnDestroy {
   saving = false;
   pending?: PendingChange;
   pendingRuntime?: { action: RuntimeAction; prompt: string };
+  pendingResetDefaults = false;
   runtimeBusy?: RuntimeAction;
   retry?: { key: SettingKey; value: boolean };
+  retryResetDefaults = false;
   private previousFocus?: HTMLElement;
   private statusPoll?: ReturnType<typeof setInterval>;
 
   get controlsDisabled(): boolean {
-    return this.saving || !!this.pending || !!this.pendingRuntime || !!this.runtimeBusy || !!this.retry;
+    return this.saving || !!this.pending || !!this.pendingResetDefaults || !!this.pendingRuntime || !!this.runtimeBusy || !!this.retry || this.retryResetDefaults;
   }
 
   get runtimeDisabled(): boolean {
@@ -438,6 +464,60 @@ export class SettingsComponent implements OnInit, OnDestroy {
   retrySave(): void {
     if (!this.retry || this.saving) return;
     void this.persist(this.retry.key, this.retry.value);
+  }
+
+  requestResetDefaults(): void {
+    if (this.controlsDisabled) return;
+    this.previousFocus = document.activeElement as HTMLElement;
+    this.pendingResetDefaults = true;
+    setTimeout(() => this.resetDialog?.nativeElement.showModal(), 0);
+  }
+
+  cancelResetDefaults(): void {
+    this.pendingResetDefaults = false;
+    this.restoreFocus();
+  }
+
+  confirmResetDefaults(): void {
+    if (!this.pendingResetDefaults) return;
+    this.pendingResetDefaults = false;
+    void this.persistResetDefaults();
+  }
+
+  retryReset(): void {
+    if (!this.retryResetDefaults || this.saving) return;
+    void this.persistResetDefaults();
+  }
+
+  private async persistResetDefaults(): Promise<void> {
+    this.saving = true;
+    this.message = "";
+    let saved = false;
+    try {
+      await ratsCall("config.set", resettableDefaults);
+      saved = true;
+      this.retryResetDefaults = false;
+      this.retry = undefined;
+      await this.refreshState();
+      this.message = this.status?.restartRequired
+        ? "13 项默认配置已保存。已授权项按现有规则即时生效；网络与采集启动偏好下次启动时生效。"
+        : "13 项默认配置已保存。已授权项按现有规则即时生效；启动偏好不会启动当前网络或采集。";
+      this.messageIsError = false;
+    } catch (error) {
+      if (!saved) {
+        this.retryResetDefaults = true;
+        this.retry = undefined;
+        try { await this.refreshState(); } catch { /* Keep the last known values. */ }
+        this.message = `恢复默认配置未能确认写盘：${String(error)}。配置可能已在运行时应用但未持久化；可重试整组保存。`;
+      } else {
+        this.retryResetDefaults = false;
+        this.message = `默认配置已保存，但状态刷新失败：${String(error)}。请刷新状态。`;
+      }
+      this.messageIsError = true;
+    } finally {
+      this.saving = false;
+      this.restoreFocus();
+    }
   }
 
   private confirmationPrompt(key: SettingKey, value: boolean): string | undefined {
