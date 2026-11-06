@@ -126,6 +126,15 @@ bool Crawler::start()
                     Qt::QueuedConnection);
         });
 
+        bt->set_spider_get_peers_callback([gate, generation](const librats::InfoHash& info_hash) {
+            std::array<uint8_t, 20> infoHash = info_hash;
+            std::lock_guard<std::mutex> lock(gate->mutex);
+            if (auto* crawler = gate->crawler)
+                QMetaObject::invokeMethod(crawler,
+                    [crawler, infoHash, generation]() { crawler->onGetPeers(infoHash, generation); },
+                    Qt::QueuedConnection);
+        });
+
         qInfo() << "Spider mode enabled with announce callback";
 #endif
 
@@ -175,6 +184,7 @@ void Crawler::stop()
     librats::Bittorrent* bt = bittorrent();
     if (bt) {
         bt->set_spider_mode(false);
+        bt->set_spider_get_peers_callback({});
     }
 #endif
 
@@ -327,8 +337,13 @@ void Crawler::onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::str
     acceptInfoHash(infoHash, QString::fromStdString(ip), port, generation);
 }
 
+void Crawler::onGetPeers(const std::array<uint8_t, 20>& infoHash, uint64_t generation)
+{
+    acceptInfoHash(infoHash, {}, 0, generation, true);
+}
+
 void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QString& peerIp,
-    uint16_t peerPort, uint64_t generation)
+    uint16_t peerPort, uint64_t generation, bool fromGetPeers)
 {
     if (!running_ || generation != generation_) return;
     // Convert info-hash to a lower-case hex string.
@@ -369,8 +384,8 @@ void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QStr
         return;
     }
 
-    // Both announce_peer and BEP 51 use this bounded queue. Only the former has
-    // a resource peer; sample-response nodes are DHT routers, not BT peers.
+    // All three sources share the bounded queue. Only announce_peer supplies a
+    // resource peer; a get_peers requester and BEP 51 nodes are DHT contacts.
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
         if (metadataQueue_.size() >= MAX_METADATA_QUEUE) {
@@ -396,6 +411,7 @@ void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QStr
         request.infoHash = hashHex;
         request.peerIp = peerIp;
         request.peerPort = peerPort;
+        request.fromGetPeers = fromGetPeers;
         metadataQueue_.push(request);
     }
     retryAfter_.remove(hashHex);

@@ -27,6 +27,34 @@ class TestCrawlerSampling : public QObject {
     }
 
 private slots:
+    void incomingGetPeersUsesHashOnlyQueueAndStopsCleanly()
+    {
+        Crawler crawler(nullptr);
+        crawler.running_ = true;
+        crawler.generation_ = 1;
+        crawler.onGetPeers(hash(8), 1);
+        crawler.onGetPeers(hash(8), 1);
+        QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
+        QCOMPARE(crawler.hashEnqueuedCount(), 1);
+        QVERIFY(crawler.metadataQueue_.front().peerIp.isEmpty());
+        QCOMPARE(crawler.metadataQueue_.front().peerPort, uint16_t(0));
+        QVERIFY(crawler.metadataQueue_.front().fromGetPeers);
+        crawler.setKnownHashFilter([](const QString& key) { return key.startsWith("0009"); });
+        crawler.onGetPeers(hash(9), 1);
+        QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
+        const QString pendingHash = crawler.metadataQueue_.front().infoHash;
+        crawler.metadataQueue_.pop(); // simulate dispatch before the failed BEP 9 task
+        crawler.onMetadataFailed(pendingHash, false, {}, 1);
+        crawler.onGetPeers(hash(8), 1);
+        QVERIFY(crawler.metadataQueue_.empty());
+        crawler.onAnnounce(hash(8), "127.0.0.2", 6881, 1);
+        QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
+        QCOMPARE(crawler.metadataQueue_.front().peerPort, uint16_t(6881));
+        crawler.stop();
+        crawler.onGetPeers(hash(9), 1);
+        QVERIFY(crawler.metadataQueue_.empty());
+    }
+
     void sampleAndAnnounceUseSameQueue()
     {
         Crawler crawler(nullptr);

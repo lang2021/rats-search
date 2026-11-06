@@ -94,6 +94,7 @@ private:
         QString infoHash;
         QString peerIp;
         uint16_t peerPort = 0;
+        bool fromGetPeers = false;
     };
 
     // Borrowed BitTorrent subsystem (null if the transport has none).
@@ -102,8 +103,9 @@ private:
     // announce_peer callback, already marshalled onto the Qt thread.
     void onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::string& ip, uint16_t port,
         uint64_t generation);
+    void onGetPeers(const std::array<uint8_t, 20>& infoHash, uint64_t generation);
     void acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QString& peerIp,
-        uint16_t peerPort, uint64_t generation);
+        uint16_t peerPort, uint64_t generation, bool fromGetPeers = false);
     void onSampleResult(const QString& nodeKey, const librats::SampleInfohashesResult& result,
         uint64_t generation);
 
