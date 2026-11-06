@@ -168,6 +168,8 @@ void Crawler::stop()
         metadataQueue_.swap(empty);
     }
     pendingHashes_.clear();
+    for (auto it = activeMetadataTaskIds_.cbegin(); it != activeMetadataTaskIds_.cend(); ++it)
+        emit metadataEnded(it.key(), QStringLiteral("observationStopped"));
     activeMetadataTaskIds_.clear();
     sampleInFlight_.clear();
     if (!running_) {
@@ -341,16 +343,16 @@ void Crawler::onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::str
     const bool validPeer = port != 0 && !address.isNull()
         && address != QHostAddress(QHostAddress::AnyIPv4)
         && address != QHostAddress(QHostAddress::AnyIPv6);
-    acceptInfoHash(infoHash, validPeer ? peerIp : QString(), validPeer ? port : 0, generation);
+    acceptInfoHash(infoHash, validPeer ? peerIp : QString(), validPeer ? port : 0, generation, DiscoverySource::Announce);
 }
 
 void Crawler::onGetPeers(const std::array<uint8_t, 20>& infoHash, uint64_t generation)
 {
-    acceptInfoHash(infoHash, {}, 0, generation, true);
+    acceptInfoHash(infoHash, {}, 0, generation, DiscoverySource::GetPeers);
 }
 
 void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QString& peerIp,
-    uint16_t peerPort, uint64_t generation, bool fromGetPeers)
+    uint16_t peerPort, uint64_t generation, DiscoverySource source)
 {
     if (!running_ || generation != generation_) return;
     // Convert info-hash to a lower-case hex string.
@@ -437,12 +439,13 @@ void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QStr
         request.infoHash = hashHex;
         request.peerIp = peerIp;
         request.peerPort = peerPort;
-        request.fromGetPeers = fromGetPeers;
+        request.fromGetPeers = source == DiscoverySource::GetPeers;
         metadataQueue_.push(request);
     }
     retryAfter_.remove(hashHex);
     pendingHashes_.insert(hashHex);
     ++hashEnqueuedCount_;
+    emit hashQueued(hashHex, source, !peerIp.isEmpty() && peerPort);
 }
 
 void Crawler::fetchMetadata(const MetadataRequest& request)
@@ -510,7 +513,10 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
         qDebug() << "Fetching metadata for" << infoHash.left(8) << "via DHT search";
         taskId = bt->get_torrent_metadata(infoHash.toStdString(), onResult);
     }
-    if (taskId) activeMetadataTaskIds_.insert(infoHash, taskId);
+    if (taskId) {
+        activeMetadataTaskIds_.insert(infoHash, taskId);
+        emit metadataStarted(infoHash, !peerIp.isEmpty() && peerPort);
+    }
 #else
     Q_UNUSED(request);
     qWarning() << "BitTorrent features not enabled, cannot fetch metadata";
@@ -526,6 +532,7 @@ void Crawler::onMetadataReceived(const rats::domain::Torrent& torrent, const QSt
     pendingHashes_.erase(infoHash);
     rememberCooldown(infoHash, true); // also covers an index filter rejecting the result
     fetchSuccessCount_++;
+    emit metadataEnded(infoHash, QStringLiteral("received"));
     emit discovered(torrent);
 }
 
@@ -537,6 +544,13 @@ void Crawler::onMetadataFailed(const QString& infoHash, bool hadPeer, const QStr
     pendingHashes_.erase(infoHash);
     rememberCooldown(infoHash, hadPeer);
     ++fetchErrorCount_;
+    // Only forward errors produced by our metadata implementation.
+    static const QStringList known = {
+        "metadata timeout", "bittorrent stopped", "shutting down", "invalid info hash",
+        "torrent already active without metadata", "failed to create metadata task",
+        "bittorrent not running", "BT metadata engine unavailable", "invalid or mismatched BEP 9 metadata"
+    };
+    emit metadataEnded(infoHash, known.contains(error) ? error : QStringLiteral("unknown"));
     qInfo() << "Failed to get metadata for" << infoHash.left(8) << ":" << error;
 }
 

@@ -54,6 +54,8 @@ private:
     void wireEvents();
     void add(const QString& name, Handler handler);
 
+    int queuedShown_ = 0;
+    qint64 queuedOmitted_ = 0;
     app::Application* app_;
     QHash<QString, Handler> handlers_;
     QHash<QString, std::shared_ptr<RemoteSearchSession>> remoteSearches_;

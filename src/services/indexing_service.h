@@ -93,6 +93,8 @@ signals:
     // full stored entity so listeners (tracker checks, UI, replication) need no
     // second lookup.
     void torrentIndexed(const domain::Torrent& torrent);
+    // An existing row gained its missing file list and both writes succeeded.
+    void filesBackfilled(const domain::Torrent& torrent);
 
 private:
     data::TorrentRepository* repository_;

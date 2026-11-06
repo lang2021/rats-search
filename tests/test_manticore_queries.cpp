@@ -333,6 +333,8 @@ void TestManticoreQueries::testFileWriteFailureIsReported()
     const auto indexed = indexing.insert(makeTorrent(880012, "Indexing failure"));
     QVERIFY(indexed.success); // fileless Feed-style records remain valid
 
+    QSignalSpy indexedEvents(&indexing, &rats::service::IndexingService::torrentIndexed);
+    QSignalSpy backfillEvents(&indexing, &rats::service::IndexingService::filesBackfilled);
     Torrent backfill = partial;
     backfill.fileList = full.fileList;
     backfill.files = 1;
@@ -361,6 +363,8 @@ void TestManticoreQueries::testFileWriteFailureIsReported()
     const auto serviceFailure = indexing.insert(viaService);
     QVERIFY(!serviceFailure.success);
     QVERIFY(serviceFailure.partialWrite);
+    QCOMPARE(indexedEvents.size(), 0);
+    QCOMPARE(backfillEvents.size(), 0);
     QVERIFY(repo.exists(viaService.hash));
 
     rats::service::DatabaseImporter importer(&indexing);

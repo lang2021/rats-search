@@ -59,6 +59,8 @@ private slots:
         QVERIFY(!librats::bittorrent::TorrentInfo::from_info_dict(infoDict.encode(), wrongHash).has_value());
         const QString key = QString::fromStdString(parsed->info_hash_hex());
 
+        QSignalSpy indexed(&indexing, &service::IndexingService::torrentIndexed);
+        QSignalSpy backfilled(&indexing, &service::IndexingService::filesBackfilled);
         domain::Torrent partial = toDomainTorrent(key, *parsed);
         partial.name = QStringLiteral("preserve existing name");
         partial.fileList.clear(); // Feed carries a count, but no concrete files.
@@ -109,6 +111,8 @@ private slots:
         QVERIFY(persisted.success);
         QVERIFY(persisted.alreadyExists);
         QVERIFY(persisted.filesBackfilled);
+        QCOMPARE(backfilled.count(), 1);
+        QCOMPARE(indexed.count(), 1); // only the original Feed insertion
         QCOMPARE(crawler.discoveredCount(), 1);
         QTRY_COMPARE(repo.inspectFiles(key, 1).state, data::TorrentRepository::FileLookup::State::Present);
         const auto stored = repo.get(key);
@@ -125,6 +129,7 @@ private slots:
         const auto again = indexing.insert(toDomainTorrent(key, *parsed));
         QVERIFY(again.success);
         QVERIFY(!again.filesBackfilled);
+        QCOMPARE(backfilled.count(), 1);
 
         // A failed metadata attempt leaves the Feed record intact and obeys
         // the existing cooldown before a later discovery can retry it.
@@ -172,10 +177,16 @@ private slots:
         Crawler crawler(nullptr);
         crawler.running_ = true;
         crawler.generation_ = 1;
+        QSignalSpy queued(&crawler, &Crawler::hashQueued);
+        QSignalSpy started(&crawler, &Crawler::metadataStarted);
+        QSignalSpy ended(&crawler, &Crawler::metadataEnded);
         crawler.onGetPeers(hash(8), 1);
         crawler.onGetPeers(hash(8), 1);
         QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
         QCOMPARE(crawler.hashEnqueuedCount(), 1);
+        QCOMPARE(queued.size(), 1);
+        QCOMPARE(queued.first()[1].value<Crawler::DiscoverySource>(), Crawler::DiscoverySource::GetPeers);
+        QCOMPARE(started.size(), 0);
         QVERIFY(crawler.metadataQueue_.front().peerIp.isEmpty());
         QCOMPARE(crawler.metadataQueue_.front().peerPort, uint16_t(0));
         QVERIFY(crawler.metadataQueue_.front().fromGetPeers);
@@ -186,7 +197,8 @@ private slots:
         QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
         const QString pendingHash = crawler.metadataQueue_.front().infoHash;
         crawler.metadataQueue_.pop(); // simulate dispatch before the failed BEP 9 task
-        crawler.onMetadataFailed(pendingHash, false, {}, 1);
+        crawler.onMetadataFailed(pendingHash, false, "metadata timeout", 1);
+        QCOMPARE(ended.last()[1].toString(), QString("metadata timeout"));
         crawler.onGetPeers(hash(8), 1);
         QVERIFY(crawler.metadataQueue_.empty());
         crawler.onAnnounce(hash(8), "127.0.0.2", 6881, 1);
@@ -234,7 +246,9 @@ private slots:
         reply.status = librats::SampleInfohashesStatus::Success;
         reply.interval = 21600;
         reply.samples = {hash(1), hash(2)};
+        QSignalSpy sources(&crawler, &Crawler::hashQueued);
         crawler.onSampleResult("node-a", reply, 1);
+        QCOMPARE(sources.first()[1].value<Crawler::DiscoverySource>(), Crawler::DiscoverySource::Sample);
         QCOMPARE(crawler.sampleResponseCount(), 1);
         QCOMPARE(crawler.sampleHashCount(), 2);
         QCOMPARE(crawler.hashEnqueuedCount(), 2);
@@ -247,6 +261,9 @@ private slots:
         QCOMPARE(crawler.metadataQueue_.front().peerIp, QStringLiteral("127.0.0.2"));
         QCOMPARE(crawler.metadataQueue_.front().peerPort, uint16_t(6881));
         crawler.onAnnounce(hash(3), "127.0.0.3", 6882, 1);
+        QCOMPARE(sources.size(), 3);
+        QCOMPARE(sources.last()[1].value<Crawler::DiscoverySource>(), Crawler::DiscoverySource::Announce);
+        QVERIFY(sources.last()[2].toBool());
         QCOMPARE(crawler.metadataQueue_.size(), size_t(3));
         QCOMPARE(crawler.hashEnqueuedCount(), 3);
         crawler.setKnownHashFilter([](const QString& key) {

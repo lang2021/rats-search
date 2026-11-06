@@ -391,6 +391,39 @@ void ApiRouter::wireEvents()
         [this](const QString& hash, const QJsonArray& files) {
             emit event(QStringLiteral("filesReady"), QJsonObject { { "hash", hash }, { "files", files } });
         });
+    auto* window = new QTimer(this);
+    window->setSingleShot(true);
+    window->setInterval(1000);
+    connect(window, &QTimer::timeout, this, [this] {
+        if (queuedOmitted_ > 0)
+            emit event("trawlOmitted", QJsonObject{{"count", queuedOmitted_}});
+        queuedShown_ = queuedOmitted_ = 0;
+    });
+    using Source = net::Crawler::DiscoverySource;
+    connect(app_->crawler(), &net::Crawler::hashQueued, this,
+        [this, window](const QString& hash, Source source, bool hasPeer) {
+            if (!window->isActive()) window->start();
+            if (queuedShown_ >= 12) { ++queuedOmitted_; return; }
+            ++queuedShown_;
+            const QString origin = source == Source::Sample ? "BEP 51"
+                : source == Source::GetPeers ? "get_peers" : "announce_peer";
+            emit event("trawlQueued", QJsonObject{{"hash", hash.left(12)}, {"source", origin}, {"hasPeer", hasPeer}});
+        });
+    connect(app_->crawler(), &net::Crawler::metadataStarted, this,
+        [this](const QString& hash, bool hasPeer) {
+            emit event("trawlStarted", QJsonObject{{"hash", hash.left(12)}, {"hasPeer", hasPeer}});
+        });
+    connect(app_->crawler(), &net::Crawler::metadataEnded, this,
+        [this](const QString& hash, const QString& outcome) {
+            emit event("trawlMetadata", QJsonObject{{"hash", hash.left(12)}, {"outcome", outcome}});
+        });
+    connect(app_->crawler(), &net::Crawler::statusChanged, this, [this](const QString& status) {
+        emit event("trawlState", QJsonObject{{"status", status}});
+    });
+    connect(app_->indexing(), &service::IndexingService::filesBackfilled, this, [this](const domain::Torrent& t) {
+        emit event("torrentBackfilled", QJsonObject{{"hash", t.hash}, {"name", t.name},
+            {"size", t.size}, {"files", t.files}});
+    });
     connect(app_->indexing(), &service::IndexingService::torrentIndexed, this, [this](const domain::Torrent& torrent) {
         emit event(QStringLiteral("torrentIndexed"), QJsonObject {
             { "hash", torrent.hash },

@@ -474,13 +474,21 @@ void ApiServer::stop()
 void ApiServer::broadcastEvent(const QString& event, const QJsonValue& data)
 {
     QJsonObject msg;
+    if (authenticatedWsClients_.isEmpty()) return;
+    msg["time"] = QDateTime::currentMSecsSinceEpoch();
     msg["event"] = event;
     msg["data"] = data;
 
     const QString json = QString::fromUtf8(QJsonDocument(msg).toJson(QJsonDocument::Compact));
 
-    for (QWebSocket* client : wsClients_) {
+    const auto recipients = authenticatedWsClients_;
+    for (QWebSocket* client : recipients) {
         if (client->isValid() && authenticatedWsClients_.contains(client)) {
+            // A stalled browser should reconnect instead of buffering the stream indefinitely.
+            if (client->bytesToWrite() > 512 * 1024) {
+                client->close(QWebSocketProtocol::CloseCodeGoingAway, "Slow event consumer");
+                continue;
+            }
             client->sendTextMessage(json);
         }
     }

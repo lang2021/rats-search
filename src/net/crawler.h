@@ -81,7 +81,13 @@ public:
     using KnownHashFilter = std::function<MetadataDecision(const QString& infoHash)>;
     void setKnownHashFilter(KnownHashFilter filter);
 
+    enum class DiscoverySource { Sample, GetPeers, Announce };
+    Q_ENUM(DiscoverySource)
+
 signals:
+    void hashQueued(const QString& hash, DiscoverySource source, bool hasPeer);
+    void metadataStarted(const QString& hash, bool hasPeer);
+    void metadataEnded(const QString& hash, const QString& outcome);
     void statusChanged(const QString& status);
     // Emitted once metadata has been fetched and a full torrent model built.
     void discovered(const rats::domain::Torrent& torrent);
@@ -111,7 +117,7 @@ private:
         uint64_t generation);
     void onGetPeers(const std::array<uint8_t, 20>& infoHash, uint64_t generation);
     void acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QString& peerIp,
-        uint16_t peerPort, uint64_t generation, bool fromGetPeers = false);
+        uint16_t peerPort, uint64_t generation, DiscoverySource source = DiscoverySource::Sample);
     void onSampleResult(const QString& nodeKey, const librats::SampleInfohashesResult& result,
         uint64_t generation);
 

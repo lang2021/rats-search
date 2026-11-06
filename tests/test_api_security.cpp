@@ -14,6 +14,7 @@
 #include <QWebSocket>
 #include "app/application.h"
 #include "app/config_store.h"
+#include "net/crawler.h"
 #include "net/torrent_engine.h"
 #include "rest/api_router.h"
 #include "rest/api_server.h"
@@ -549,6 +550,23 @@ void TestApiSecurity::testEventsOnlyReachAuthenticatedWebSockets()
     app.config()->setSafeSearch(!app.config()->safeSearch());
     QTRY_VERIFY_WITH_TIMEOUT(trustedMessages.size() > 0, 5000);
     QVERIFY(trustedMessages.takeFirst().at(0).toString().contains("configChanged"));
+    for (int i = 0; i < 17; ++i)
+        emit app.crawler()->hashQueued(QString(40, 'a'), rats::net::Crawler::DiscoverySource::GetPeers, false);
+    QTRY_COMPARE_WITH_TIMEOUT(trustedMessages.size(), 13, 5000);
+    for (int i = 0; i < 13; ++i) {
+        const auto msg = QJsonDocument::fromJson(trustedMessages.at(i).at(0).toString().toUtf8()).object();
+        QVERIFY(msg.value("time").toInteger() > 0);
+        const auto data = msg.value("data").toObject();
+        if (i == 12) {
+            QCOMPARE(msg.value("event").toString(), "trawlOmitted");
+            QCOMPARE(data.value("count").toInt(), 5);
+        } else {
+            QCOMPARE(msg.value("event").toString(), "trawlQueued");
+            QCOMPARE(data.value("source").toString(), "get_peers");
+            QCOMPARE(data.value("hash").toString(), QString(12, 'a'));
+            QVERIFY(!data.value("hasPeer").toBool());
+        }
+    }
     QCOMPARE(untrustedMessages.size(), 0);
     untrusted.close();
     trusted.close();

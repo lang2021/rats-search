@@ -223,6 +223,8 @@ private slots:
             QCOMPARE(app.featureStatus()["crawlerState"].toString(), QStringLiteral("stopped"));
         }
         QVERIFY(post(http, token, "crawler.start").body["success"].toBool());
+        QSignalSpy startedTasks(app.crawler(), &rats::net::Crawler::metadataStarted);
+        QSignalSpy endedTasks(app.crawler(), &rats::net::Crawler::metadataEnded);
         QUdpSocket announcer;
         QVERIFY(announcer.bind(QHostAddress::LocalHost, 0));
         librats::NodeId senderId{};
@@ -236,8 +238,12 @@ private slots:
                      static_cast<qint64>(announce.size()), QHostAddress::LocalHost, dht),
             static_cast<qint64>(announce.size()));
         QTRY_VERIFY_WITH_TIMEOUT(app.crawler()->pendingFetches() > 0, 3000);
+        QCOMPARE(startedTasks.size(), 1);
+        QVERIFY(startedTasks.first()[1].toBool());
         const Reply draining = post(http, token, "crawler.stop");
         QVERIFY(draining.body["success"].toBool());
+        QCOMPARE(endedTasks.size(), 1);
+        QCOMPARE(endedTasks.first()[1].toString(), QString("observationStopped"));
         QCOMPARE(draining.body["data"].toObject()["crawlerState"].toString(), QStringLiteral("stopping"));
         QVERIFY(!post(http, token, "crawler.start").body["success"].toBool());
         QCOMPARE(app.torrents()->statistics().torrents, 0);

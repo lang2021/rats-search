@@ -67,6 +67,7 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
                 existing.files = torrent.fileList.size();
                 result.torrent = existing;
                 result.filesBackfilled = true;
+                emit filesBackfilled(existing);
             }
         }
 
