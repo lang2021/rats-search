@@ -149,8 +149,9 @@ void TorrentRepository::primeFromDatabase()
 // CRUD
 // ---------------------------------------------------------------------------
 
-TorrentRepository::RowSlot TorrentRepository::resolve(const QString& hash, bool withRow)
+TorrentRepository::RowSlot TorrentRepository::resolve(const QString& hash, bool withRow, bool* ok)
 {
+    if (ok) *ok = false;
     RowSlot slot;
     slot.id = rowIdFromHash(hash);
     if (slot.id == 0)
@@ -163,7 +164,7 @@ TorrentRepository::RowSlot TorrentRepository::resolve(const QString& hash, bool 
     // question, so the columns are only paid for when someone needs them.
     const QString columns = withRow ? QStringLiteral("*") : QStringLiteral("hash");
     const auto rows
-        = db_->query(QStringLiteral("SELECT %1 FROM torrents WHERE id = ? LIMIT 1").arg(columns), { slot.id });
+        = db_->query(QStringLiteral("SELECT %1 FROM torrents WHERE id = ? LIMIT 1").arg(columns), { slot.id }, ok);
     if (rows.isEmpty())
         return slot;
 
@@ -575,22 +576,24 @@ QVector<Torrent> TorrentRepository::random(int limit, bool includeFiles)
     return results;
 }
 
-QHash<QString, Torrent> TorrentRepository::getMany(const QStringList& hashes, QSet<QString>* collided)
+QHash<QString, Torrent> TorrentRepository::getMany(const QStringList& hashes, QSet<QString>* collided, bool* ok)
 {
     QHash<QString, Torrent> result;
+    if (ok) *ok = true;
     if (hashes.isEmpty())
         return result;
 
     QHash<qint64, QStringList> wanted;
     const QVector<qint64> ids = idsFor(hashes, wanted);
     const QString sql = SelectQuery(kTorrents).whereInIds(QStringLiteral("id"), ids).limit(0, ids.size()).build();
-    for (const Torrent& t : selectTorrents(sql)) {
+    for (const auto& row : db_->query(sql, {}, ok)) {
+        const Torrent t = rowToTorrent(row);
         // One row answers every hash that asked for its id: the one it actually
         // belongs to is found, and each of the others lost the slot and must be
         // reported so the caller drops it instead of writing over this row.
         for (const QString& want : wanted.value(t.id)) {
             if (sameHash(t.hash, want))
-                result.insert(t.hash, t);
+                result.insert(want, t);
             else if (collided)
                 *collided += want;
         }
@@ -598,8 +601,9 @@ QHash<QString, Torrent> TorrentRepository::getMany(const QStringList& hashes, QS
     return result;
 }
 
-int TorrentRepository::addMany(const QVector<Torrent>& torrents, WriteOutcome* outcome)
+int TorrentRepository::addMany(const QVector<Torrent>& torrents, WriteOutcome* outcome, QMap<QString, QString>* confirmedNames)
 {
+    if (confirmedNames) confirmedNames->clear();
     if (outcome)
         *outcome = WriteOutcome::Failed;
     if (torrents.isEmpty())
@@ -674,6 +678,10 @@ int TorrentRepository::addMany(const QVector<Torrent>& torrents, WriteOutcome* o
         *outcome = filesSaved ? WriteOutcome::Complete : WriteOutcome::Partial;
     if (!filesSaved)
         qWarning() << "[TorrentRepository] batch torrent rows saved but file lists failed";
+    if (filesSaved && confirmedNames) {
+        for (const auto& row : torrentRows)
+            confirmedNames->insert(row.value("hash").toString(), row.value("name").toString());
+    }
     return torrentRows.size();
 }
 

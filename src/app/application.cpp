@@ -2,6 +2,7 @@
 
 #include "app/config_store.h"
 #include "app/favorites_store.h"
+#include "app/watch_store.h"
 #include "app/search_history_store.h"
 #include "app/translation_manager.h"
 #include "common/logging.h"
@@ -53,6 +54,7 @@ struct Application::Private {
 
     // Adapters (owned, constructed in dependency order)
     std::unique_ptr<ConfigStore> config;
+    std::unique_ptr<WatchStore> watch;
     std::unique_ptr<FavoritesStore> favorites;
     std::unique_ptr<SearchHistoryStore> searchHistory;
     std::unique_ptr<data::Manticore> manticore;
@@ -110,6 +112,7 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
         language = TranslationManager::systemLanguage();
     translations.setLanguage(language);
 
+    d_->watch = std::make_unique<WatchStore>(dataDir);
     d_->favorites = std::make_unique<FavoritesStore>(dataDir);
     d_->searchHistory = std::make_unique<SearchHistoryStore>(dataDir);
 
@@ -254,6 +257,12 @@ void Application::wireSignals()
         }
         return Decision::Error;
     });
+
+    // observe() only posts the committed hash/name to the Watch SQL thread.
+    connect(d_->indexing.get(), &service::IndexingService::torrentIndexed, d_->watch.get(),
+        [store = d_->watch.get()](const domain::Torrent& t) { store->observe({{t.hash, t.name}}); }, Qt::DirectConnection);
+    connect(d_->indexing.get(), &service::IndexingService::batchIndexed, d_->watch.get(),
+        &WatchStore::observe, Qt::DirectConnection);
 
     // A freshly indexed torrent triggers tracker scrapes.
     connect(d_->indexing.get(), &service::IndexingService::torrentIndexed, d_->trackers.get(),
@@ -521,6 +530,11 @@ ConfigStore* Application::config() const
 {
     return d_->config.get();
 }
+WatchStore* Application::watch() const
+{
+    return d_->watch.get();
+}
+
 FavoritesStore* Application::favorites() const
 {
     return d_->favorites.get();

@@ -11,6 +11,7 @@
         <a routerLink="/search" routerLinkActive="active"><span>02</span> 资源搜索</a>
         <a routerLink="/discover" routerLinkActive="active"><span>03</span> 发现资源</a>
         <a routerLink="/history" routerLinkActive="active"><span>04</span> 搜索历史</a>
+        <a routerLink="/watch" routerLinkActive="active"><mat-icon aria-hidden="true">notifications</mat-icon> 资源关注 @if (watch.unread(); as count) { <b>{{count}} 未读</b> }</a>
       </nav>
       <p class="nav-caption">SYSTEM</p>
       <nav (click)="menuOpen = false">

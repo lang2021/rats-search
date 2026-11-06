@@ -64,6 +64,7 @@ private slots:
     void testReAddDoesNotDuplicateRow();
     void testRowIdCollisionIsRefused();
     void testBatchRowIdCollisionIsRefused();
+    void testWatchBatchIncludesOnlyNewResources();
     void testBatchDuplicateHashCollapsesToOneRow();
     void testMigrationReKeysLegacyRows();
     void testUpdateAppliesAndKeepsSearchable();
@@ -349,11 +350,13 @@ void TestManticoreQueries::testFileWriteFailureIsReported()
     QCOMPARE(outcome, Outcome::Failed);
     QCOMPARE(repo.get(partial.hash)->files, 0);
 
+    QSignalSpy newBatch(&indexing, &rats::service::IndexingService::batchIndexed);
     Torrent batchItem = makeTorrent(880013, "Batch full metadata");
     batchItem.fileList = { File { "batch.bin", 5 } };
     const auto batch = indexing.insertBatch({ batchItem });
     QVERIFY(batch.writeFailed);
     QVERIFY(batch.partialWrite);
+    QCOMPARE(newBatch.count(), 0);
     QCOMPARE(batch.inserted, 1);
     QVERIFY(repo.exists(batchItem.hash));
     QVERIFY(!batch.error.isEmpty());
@@ -613,7 +616,10 @@ void TestManticoreQueries::testBatchRowIdCollisionIsRefused()
 
     const auto before = repo_->statistics();
     // One row written, not two: the count is the contract the statistics ride on.
-    QCOMPARE(repo_->addMany({ first, second }), 1);
+    QMap<QString, QString> confirmed;
+    QCOMPARE(repo_->addMany({ first, second }, nullptr, &confirmed), 1);
+    QCOMPARE(confirmed.size(), 1);
+    QCOMPARE(confirmed.value(first.hash), first.name);
     QVERIFY(waitForTorrent(first.hash));
 
     // The first one owns the row, whole and unmixed, and the loser stayed out.
@@ -649,6 +655,25 @@ void TestManticoreQueries::testBatchDuplicateHashCollapsesToOneRow()
     const auto stored = repo_->get(t.hash);
     QVERIFY(stored.has_value());
     QCOMPARE(stored->name, QString("Batch Duplicate"));
+}
+
+void TestManticoreQueries::testWatchBatchIncludesOnlyNewResources()
+{
+    auto feed = makeTorrent(890001, "Ubuntu Feed entry");
+    auto fresh = makeTorrent(890002, "Ubuntu image");
+    QVERIFY(indexing_->insert(feed).success);
+    QVERIFY(waitForTorrent(feed.hash));
+    feed.fileList = {File{"readme", 256}};
+    QSignalSpy batches(indexing_, &rats::service::IndexingService::batchIndexed);
+    QVERIFY(!indexing_->insertBatch({feed, fresh}).writeFailed);
+    QCOMPARE(batches.size(), 1);
+    const auto names = batches.first().first().value<QMap<QString, QString>>();
+    QCOMPARE(names.size(), 1);
+    QCOMPARE(names.value(fresh.hash), fresh.name);
+    QVERIFY(waitForFiles(feed.hash, 1));
+    QVERIFY(waitForTorrent(fresh.hash));
+    QVERIFY(!indexing_->insertBatch({feed, fresh}).writeFailed);
+    QCOMPARE(batches.size(), 1);
 }
 
 void TestManticoreQueries::testMigrationReKeysLegacyRows()

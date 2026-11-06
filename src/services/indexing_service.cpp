@@ -32,7 +32,12 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
     // below and is handed to add() further down, so a torrent the crawler has
     // never seen costs a single docid query instead of one here and another
     // inside add().
-    const data::TorrentRepository::RowSlot slot = repository_->resolve(torrent.hash, /*withRow*/ true);
+    bool lookupOk = false;
+    const auto slot = repository_->resolve(torrent.hash, /*withRow*/ true, &lookupOk);
+    if (!lookupOk) {
+        result.error = QStringLiteral("Cannot determine whether torrent is new");
+        return result;
+    }
 
     // Already indexed? Merge what the incoming copy adds over the stored one
     // (e.g. from a peer) and return the stored entity.
@@ -149,7 +154,13 @@ IndexingService::BatchResult IndexingService::insertBatch(
     for (const domain::Torrent& t : candidates)
         hashes << t.hash;
     QSet<QString> collided;
-    const QHash<QString, domain::Torrent> existing = repository_->getMany(hashes, &collided);
+    bool lookupOk = false;
+    const auto existing = repository_->getMany(hashes, &collided, &lookupOk);
+    if (!lookupOk) {
+        result.writeFailed = true;
+        result.error = QStringLiteral("Cannot determine which torrents are new");
+        return result;
+    }
 
     QVector<domain::Torrent> fresh;
     fresh.reserve(candidates.size());
@@ -217,7 +228,9 @@ IndexingService::BatchResult IndexingService::insertBatch(
     // 3. Everything genuinely new goes in as one multi-row write.
     if (!fresh.isEmpty()) {
         data::TorrentRepository::WriteOutcome outcome;
-        result.inserted = repository_->addMany(fresh, &outcome);
+        QMap<QString, QString> names;
+        result.inserted = repository_->addMany(fresh, &outcome, &names);
+        if (!names.isEmpty()) emit batchIndexed(names);
         if (outcome != data::TorrentRepository::WriteOutcome::Complete) {
             result.writeFailed = true;
             result.partialWrite = outcome == data::TorrentRepository::WriteOutcome::Partial;

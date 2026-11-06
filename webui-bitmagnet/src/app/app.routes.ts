@@ -13,6 +13,7 @@ export const routes: Routes = [
   ] },
   { path: "torrent/:infoHash", loadComponent: detail },
   { path: "discover", data: { page: "discover" }, loadComponent: () => import("./rats/browse.component").then((c) => c.BrowseComponent) },
+  { path: "watch", loadComponent: () => import("./rats/watch.component").then(c => c.WatchComponent) },
   { path: "history", data: { page: "history" }, loadComponent: () => import("./rats/browse.component").then((c) => c.BrowseComponent) },
   { path: "console", loadComponent: consoleView, children: [
     { path: "", loadComponent: () => import("./dashboard/dashboard-home.component").then((c) => c.DashboardHomeComponent) },

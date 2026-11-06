@@ -590,6 +590,7 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
         : routePath.startsWith("/search/") ? routePath.mid(QStringLiteral("/search/").size()) : QString();
     const bool legacyDetailRoute = infohash::isValid(legacyHash);
     const bool appRoute = routePath == "/search" || legacyDetailRoute || routePath == "/discover" || routePath == "/history" ||
+        routePath == "/watch" ||
         routePath == "/console" || routePath.startsWith("/console/") || routePath.startsWith("/torrent/");
     if (appRoute) {
         socket->write(handleStaticFile("/index.html"));
@@ -617,7 +618,7 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
     }
 
     const QString method = req.path.mid(5); // strip "/api/"
-    if ((method == QLatin1String("search.remote") || method == QLatin1String("search.cancel") ||
+    if ((method.startsWith("watch.") || method == QLatin1String("search.remote") || method == QLatin1String("search.cancel") ||
             method == QLatin1String("network.start") || method == QLatin1String("network.stop") ||
             method == QLatin1String("crawler.start") || method == QLatin1String("crawler.stop"))
         && req.method != "POST") {
@@ -677,7 +678,8 @@ void ApiServer::dispatchHttp(QTcpSocket* socket, const QString& method, const QJ
     }
 
     QPointer<QTcpSocket> guardedSocket(socket);
-    router_->call(method, params, [this, guardedSocket, requestId, method](const Result& result) {
+    router_->call(method, params, [this, server = QPointer<ApiServer>(this), guardedSocket, requestId, method](const Result& result) {
+        if (!server) return;
         if (!guardedSocket || !guardedSocket->isOpen()) {
             requestStartTimes_.remove(requestId);
             return;

@@ -1,3 +1,4 @@
+import { WatchUpdates } from "../rats/watch-updates.service";
 import { Component, inject } from "@angular/core";
 import { Router } from "@angular/router";
 import { Title } from "@angular/platform-browser";
@@ -18,6 +19,7 @@ import { BreakpointsService } from "./breakpoints.service";
   imports: [AppModule, HealthModule, ThemeEmitterComponent, VersionComponent],
 })
 export class LayoutComponent {
+  readonly watch = inject(WatchUpdates);
   menuOpen = false;
   themeManager = inject(ThemeManager);
   translateManager = inject(TranslateManager);

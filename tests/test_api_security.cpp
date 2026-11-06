@@ -107,6 +107,8 @@ TestApiSecurity::Response TestApiSecurity::request(const QString& method, const 
 
 void TestApiSecurity::testHttpRequiresToken()
 {
+    for (const QString method : {"watch.list", "watch.unread", "watch.add", "watch.enable", "watch.delete", "watch.read"})
+        QCOMPARE(request(method, {}, false).status, 401);
     QCOMPARE(request("stats.get", {}, false).status, 401);
     QCOMPARE(request("stats.get").status, 400); // authenticated; test server has no router
     QCOMPARE(request("torrent.create", {{"path", root_ + "/source.txt"}, {"seed", true}}, false).status, 401);

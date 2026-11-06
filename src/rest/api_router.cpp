@@ -3,6 +3,7 @@
 #include "app/application.h"
 #include "app/config_store.h"
 #include "app/search_history_store.h"
+#include "app/watch_store.h"
 #include "common/infohash.h"
 #include "data/torrent_repository.h"
 #include "domain/peer.h"
@@ -391,6 +392,7 @@ void ApiRouter::wireEvents()
         [this](const QString& hash, const QJsonArray& files) {
             emit event(QStringLiteral("filesReady"), QJsonObject { { "hash", hash }, { "files", files } });
         });
+    connect(app_->watch(), &app::WatchStore::changed, this, [this] { emit event("watchChanged", {}); });
     auto* window = new QTimer(this);
     window->setSingleShot(true);
     window->setInterval(1000);
@@ -638,8 +640,14 @@ void ApiRouter::registerMethods()
     });
 
     // -----------------------------------------------------------------------
-    // Search history
+    // Watch and search history
     // -----------------------------------------------------------------------
+    for (const QString method : {"watch.list", "watch.unread", "watch.add", "watch.enable", "watch.delete", "watch.read"}) {
+        add(method, [this, method](const QJsonObject& params, const ResultCallback& respond) {
+            app_->watch()->request(method, params, respond);
+        });
+    }
+
     add("search.history", [this](const QJsonObject& params, const ResultCallback& respond) {
         const int limit = params["limit"].toInt(app::SearchHistoryStore::kMaxEntries);
 

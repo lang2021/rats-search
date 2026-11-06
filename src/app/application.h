@@ -10,6 +10,7 @@
 
 namespace rats::app {
 class ConfigStore;
+class WatchStore;
 class FavoritesStore;
 class SearchHistoryStore;
 } // namespace rats::app
@@ -98,6 +99,7 @@ public:
     // Service accessors (non-owning). Valid after construction; live subsystems
     // (database, transport) only after start().
     ConfigStore* config() const;
+    WatchStore* watch() const;
     FavoritesStore* favorites() const;
     SearchHistoryStore* searchHistory() const;
     data::TorrentRepository* torrents() const;

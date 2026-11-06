@@ -85,7 +85,7 @@ public:
     // get the stored copy back as well, and the result to add() so the write does
     // not repeat the query — that is what the insert path does instead of a
     // get() followed by an add() that looks the same row up again.
-    RowSlot resolve(const QString& hash, bool withRow = false);
+    RowSlot resolve(const QString& hash, bool withRow = false, bool* ok = nullptr);
 
     // CRUD ---------------------------------------------------------------------
     // Idempotent: a torrent that is already stored is left untouched and reports
@@ -110,7 +110,7 @@ public:
     // is dropped rather than reported as a hit. Pass `collided` to learn which of
     // the requested hashes lost such a race: they cannot be stored (their slot
     // belongs to another torrent) and must not be written.
-    QHash<QString, domain::Torrent> getMany(const QStringList& hashes, QSet<QString>* collided = nullptr);
+    QHash<QString, domain::Torrent> getMany(const QStringList& hashes, QSet<QString>* collided = nullptr, bool* ok = nullptr);
     // Insert torrents already known to be absent, in as few statements as the
     // packet limit allows. Statistics move once for the whole batch instead of
     // once per row, so a million-row import does not emit a million signals.
@@ -123,7 +123,8 @@ public:
     //
     // Returns the number of main rows reported written, which is what the
     // statistics moved by. Inspect outcome to detect missing file-list writes.
-    int addMany(const QVector<domain::Torrent>& torrents, WriteOutcome* outcome = nullptr);
+    int addMany(const QVector<domain::Torrent>& torrents, WriteOutcome* outcome = nullptr,
+        QMap<QString, QString>* confirmedNames = nullptr);
 
     // Search -------------------------------------------------------------------
     QVector<domain::SearchHit> searchTorrents(const SearchQuery& query);

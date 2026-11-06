@@ -89,6 +89,8 @@ public:
     bool accepts(const domain::Torrent& torrent) const;
 
 signals:
+    // Only the hash and name of fresh rows in a fully confirmed batch.
+    void batchIndexed(const QMap<QString, QString>& names);
     // Emitted once when a genuinely new torrent has been indexed. Carries the
     // full stored entity so listeners (tracker checks, UI, replication) need no
     // second lookup.
