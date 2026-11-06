@@ -54,7 +54,7 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
             }
             // A Feed row can carry a nonzero count without a file-list row.
             // Backfill only on an explicit incoming list, not on rediscovery.
-            if (existing.files == 0 || lookup.state == data::TorrentRepository::FileLookup::State::Missing) {
+            if (lookup.state == data::TorrentRepository::FileLookup::State::Missing) {
                 data::TorrentRepository::WriteOutcome outcome;
                 if (!repository_->updateFiles(existing.hash, torrent.fileList, &outcome)) {
                     result.success = false;
@@ -66,6 +66,7 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
                 existing.fileList = torrent.fileList;
                 existing.files = torrent.fileList.size();
                 result.torrent = existing;
+                result.filesBackfilled = true;
             }
         }
 
@@ -192,7 +193,7 @@ IndexingService::BatchResult IndexingService::insertBatch(
                 result.error = QStringLiteral("File list lookup failed; batch completeness is unknown");
                 return result;
             }
-            if (stored.files == 0 || lookup.state == data::TorrentRepository::FileLookup::State::Missing) {
+            if (lookup.state == data::TorrentRepository::FileLookup::State::Missing) {
                 data::TorrentRepository::WriteOutcome outcome;
                 if (!repository_->updateFiles(stored.hash, incoming.fileList, &outcome)) {
                     result.writeFailed = true;

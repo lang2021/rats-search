@@ -38,6 +38,8 @@ public:
         std::optional<bool> countMatches;
     };
 
+    enum class MetadataNeed { New, CompleteOrAmbiguous, MissingFiles, Error };
+
     struct SearchQuery {
         QString text;
         int offset = 0;
@@ -142,6 +144,10 @@ public:
     QHash<QString, QVector<domain::File>> filesOf(const QStringList& hashes);
     // Unlike filesOf(), this does not conflate no row with a failed query.
     FileLookup inspectFiles(const QString& hash, std::optional<int> declaredCount = std::nullopt);
+    // One main-row lookup first; only existing rows with a positive declared
+    // file count need a file-table lookup. Count mismatches are ambiguous and
+    // are not permission to overwrite an existing file list.
+    MetadataNeed inspectMetadataNeed(const QString& hash);
 
     // Partial updates ----------------------------------------------------------
     bool updateTrackerCounts(const QString& hash, int seeders, int leechers, int completed);

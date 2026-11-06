@@ -64,15 +64,17 @@ public:
     int sampleResponseCount() const { return sampleResponseCount_.load(); }
     int sampleHashCount() const { return sampleHashCount_.load(); }
     int hashEnqueuedCount() const { return hashEnqueuedCount_.load(); }
+    // Application calls this only after IndexingService confirms a new row or
+    // file-list backfill. BEP 9 success alone is counted by fetchSuccessCount.
+    void recordIndexed() { ++discoveredCount_; }
 
     // Tuning
     void setWalkInterval(int intervalMs);
 
-    // Predicate consulted for each freshly seen info-hash before a BEP 9 metadata
-    // fetch is queued: returning true skips the fetch (e.g. the torrent is
-    // already indexed). Keeps the crawler DB-free — the caller injects the
-    // lookup. Called on the Qt thread (onAnnounce is already marshalled there).
-    using KnownHashFilter = std::function<bool(const QString& infoHash)>;
+    // The caller decides whether a newly observed hash needs metadata. An
+    // inconclusive database read must never be treated as a missing record.
+    enum class MetadataDecision { Fetch, Skip, Error };
+    using KnownHashFilter = std::function<MetadataDecision(const QString& infoHash)>;
     void setKnownHashFilter(KnownHashFilter filter);
 
 signals:

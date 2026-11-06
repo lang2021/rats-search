@@ -223,6 +223,12 @@ void TestManticoreQueries::testGetWithFiles()
 void TestManticoreQueries::testFileLookupAndBackfill()
 {
     using State = TorrentRepository::FileLookup::State;
+    QCOMPARE(repo_->inspectMetadataNeed(makeTorrent(880000, "unseen").hash),
+        TorrentRepository::MetadataNeed::New);
+    Torrent ambiguous = makeTorrent(880000, "No declared files");
+    ambiguous.files = 0;
+    QVERIFY(repo_->add(ambiguous));
+    QCOMPARE(repo_->inspectMetadataNeed(ambiguous.hash), TorrentRepository::MetadataNeed::CompleteOrAmbiguous);
     Torrent partial = makeTorrent(880001, "Feed style partial row");
     partial.files = 2; // Feed can know the count without carrying the file list.
     QVERIFY(repo_->add(partial));
@@ -230,6 +236,7 @@ void TestManticoreQueries::testFileLookupAndBackfill()
     const auto missing = repo_->inspectFiles(partial.hash, partial.files);
     QCOMPARE(missing.state, State::Missing);
     QVERIFY(!missing.countMatches.has_value());
+    QCOMPARE(repo_->inspectMetadataNeed(partial.hash), TorrentRepository::MetadataNeed::MissingFiles);
 
     // A backfill replaces one row by derived id, including on repetition.
     const QVector<File> files { File { "pack/one.bin", 10 }, File { "pack/two.bin", 20 } };
@@ -237,6 +244,7 @@ void TestManticoreQueries::testFileLookupAndBackfill()
     QVERIFY(waitForFiles(partial.hash, 2));
     QCOMPARE(repo_->inspectFiles(partial.hash, 2).state, State::Present);
     QVERIFY(repo_->inspectFiles(partial.hash, 2).countMatches.value());
+    QCOMPARE(repo_->inspectMetadataNeed(partial.hash), TorrentRepository::MetadataNeed::CompleteOrAmbiguous);
     QVERIFY(!repo_->inspectFiles(partial.hash, 3).countMatches.value());
     QVERIFY(repo_->updateFiles(partial.hash, files));
     const auto rows = db_->query(QStringLiteral("SELECT id FROM files WHERE id = ?"),
@@ -251,6 +259,7 @@ void TestManticoreQueries::testFileLookupAndBackfill()
     QCOMPARE(found.state, State::Present);
     QCOMPARE(found.files.size(), 1);
     QVERIFY(found.countMatches.value());
+    QCOMPARE(repo_->inspectMetadataNeed(single.hash), TorrentRepository::MetadataNeed::CompleteOrAmbiguous);
 
     Torrent feed = makeTorrent(880003, "Feed record with count");
     feed.files = 2;
@@ -261,13 +270,23 @@ void TestManticoreQueries::testFileLookupAndBackfill()
     const auto merged = indexing_->insert(complete);
     QVERIFY(merged.success);
     QVERIFY(merged.alreadyExists);
+    QVERIFY(merged.filesBackfilled);
     QVERIFY(waitForFiles(feed.hash, 2));
     QVERIFY(repo_->inspectFiles(feed.hash, 2).countMatches.value());
     // Repeating the explicit merge should leave the one file row intact.
-    QVERIFY(indexing_->insert(complete).success);
+    const auto repeated = indexing_->insert(complete);
+    QVERIFY(repeated.success);
+    QVERIFY(!repeated.filesBackfilled);
     const auto mergedRows = db_->query(QStringLiteral("SELECT id FROM files WHERE id = ?"),
         { rats::data::rowIdFromHash(feed.hash) });
     QCOMPARE(mergedRows.size(), 1);
+
+    // A readable list with a mismatched declared count is ambiguous. The
+    // crawler must not overwrite it merely because the numbers differ.
+    const QVariantMap where { { "id", rats::data::rowIdFromHash(feed.hash) } };
+    QVERIFY(db_->update(QStringLiteral("torrents"), { { "files", 3 } }, where));
+    QCOMPARE(repo_->inspectMetadataNeed(feed.hash), TorrentRepository::MetadataNeed::CompleteOrAmbiguous);
+    QVERIFY(db_->update(QStringLiteral("torrents"), { { "files", 2 } }, where));
 }
 
 void TestManticoreQueries::testFileWriteFailureIsReported()
@@ -309,6 +328,7 @@ void TestManticoreQueries::testFileWriteFailureIsReported()
     QCOMPARE(outcome, Outcome::Partial);
     QVERIFY(repo.exists(full.hash));
     QCOMPARE(repo.inspectFiles(full.hash, full.files).state, State::Error);
+    QCOMPARE(repo.inspectMetadataNeed(full.hash), TorrentRepository::MetadataNeed::Error);
 
     const auto indexed = indexing.insert(makeTorrent(880012, "Indexing failure"));
     QVERIFY(indexed.success); // fileless Feed-style records remain valid
@@ -319,6 +339,7 @@ void TestManticoreQueries::testFileWriteFailureIsReported()
     const auto failedBackfill = indexing.insert(backfill);
     QVERIFY(!failedBackfill.success);
     QVERIFY(!failedBackfill.alreadyExists);
+    QVERIFY(!failedBackfill.filesBackfilled);
     QVERIFY(!failedBackfill.error.isEmpty());
     QCOMPARE(repo.get(partial.hash)->files, 0);
     outcome = Outcome::Complete;

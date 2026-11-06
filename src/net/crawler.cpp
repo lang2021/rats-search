@@ -395,13 +395,19 @@ void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QStr
     if (retry != retryAfter_.cend() && retry->afterMs > clock_.elapsed() &&
         !(peerPort && !peerIp.isEmpty() && !retry->hadPeer)) return;
 
-    // Skip torrents we already have: fetching BEP 9 metadata for them would burn
-    // a fetch slot and bandwidth only for the insert path to discard the result
-    // as a duplicate. The caller injects the "already indexed?" lookup, which
-    // keeps the crawler DB-free.
-    if (knownHashFilter_ && knownHashFilter_(hashHex)) {
-        qDebug() << "Already indexed:" << hashHex << "- skipping metadata fetch";
-        return;
+    // A hash-only candidate needs no file-table lookup until the caller has
+    // found an existing main row. Explicitly missing file rows may be retried
+    // through this same bounded queue; uncertain reads must stop here.
+    if (knownHashFilter_) {
+        const MetadataDecision decision = knownHashFilter_(hashHex);
+        if (decision == MetadataDecision::Error) {
+            qWarning() << "Crawler: metadata completeness check failed for" << hashHex.left(8);
+            return;
+        }
+        if (decision == MetadataDecision::Skip) {
+            qDebug() << "Already indexed or completeness ambiguous:" << hashHex.left(8);
+            return;
+        }
     }
 
     // All three sources share the bounded queue. Only announce_peer supplies a
@@ -475,8 +481,10 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
         if (!crawler->running_ || generation != crawler->generation_)
             return;
 
-        if (!success || !torrentInfo.is_valid()) {
-            const QString error = QString::fromStdString(err);
+        if (!success || !torrentInfo.is_valid() || !torrentInfo.has_metadata()
+            || torrentInfo.files().files().empty() || torrentInfo.info_hash_hex() != infoHash.toStdString()) {
+            const QString error = success ? QStringLiteral("invalid or mismatched BEP 9 metadata")
+                                          : QString::fromStdString(err);
             QMetaObject::invokeMethod(crawler, [crawler, infoHash, peerIp, error, generation]() {
                 crawler->onMetadataFailed(infoHash, !peerIp.isEmpty(), error, generation);
             }, Qt::QueuedConnection);
@@ -517,7 +525,6 @@ void Crawler::onMetadataReceived(const rats::domain::Torrent& torrent, const QSt
     activeMetadataTaskIds_.remove(infoHash);
     pendingHashes_.erase(infoHash);
     rememberCooldown(infoHash, true); // also covers an index filter rejecting the result
-    discoveredCount_++;
     fetchSuccessCount_++;
     emit discovered(torrent);
 }

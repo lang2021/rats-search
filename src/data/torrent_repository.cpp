@@ -743,6 +743,32 @@ TorrentRepository::FileLookup TorrentRepository::inspectFiles(const QString& has
     return result;
 }
 
+TorrentRepository::MetadataNeed TorrentRepository::inspectMetadataNeed(const QString& hash)
+{
+    const qint64 id = rowIdFromHash(hash);
+    if (id == 0)
+        return MetadataNeed::Error;
+    bool ok = false;
+    const auto rows = db_->query(QStringLiteral("SELECT hash, files FROM torrents WHERE id = ? LIMIT 1"), { id }, &ok);
+    if (!ok)
+        return MetadataNeed::Error;
+    if (rows.isEmpty())
+        return MetadataNeed::New;
+    if (rows.size() != 1 || !sameHash(rows.first().value(QStringLiteral("hash")).toString(), hash))
+        return MetadataNeed::Error;
+    const int declaredCount = rows.first().value(QStringLiteral("files")).toInt();
+    if (declaredCount <= 0)
+        return MetadataNeed::CompleteOrAmbiguous;
+    const FileLookup files = inspectFiles(hash, declaredCount);
+    if (files.state == FileLookup::State::Error)
+        return MetadataNeed::Error;
+    if (files.state == FileLookup::State::Missing)
+        return MetadataNeed::MissingFiles;
+    // A count mismatch may be a historical representation difference. Preserve
+    // the readable list until a separate policy can verify the source of truth.
+    return MetadataNeed::CompleteOrAmbiguous;
+}
+
 QHash<QString, QVector<File>> TorrentRepository::filesOf(const QStringList& hashes)
 {
     QHash<QString, QVector<File>> result;

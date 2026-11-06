@@ -27,6 +27,7 @@ public:
         bool success = false;
         bool alreadyExists = false;
         bool partialWrite = false; // a main/file row changed but requested files were not fully saved
+        bool filesBackfilled = false; // existing row gained a file list and both writes succeeded
         domain::Torrent torrent;
         QString error;
     };

@@ -229,10 +229,31 @@ void Application::wireSignals()
 {
     // Newly crawled torrents flow into the single insertion path.
     connect(d_->crawler.get(), &net::Crawler::discovered, d_->indexing.get(),
-        [this](const domain::Torrent& t) { d_->indexing->insert(t); });
+        [this](const domain::Torrent& t) {
+            const auto result = d_->indexing->insert(t);
+            if (result.success && (!result.alreadyExists || result.filesBackfilled))
+                d_->crawler->recordIndexed();
+            if (result.filesBackfilled)
+                qInfo() << "[Crawler] file list backfilled for" << t.hash.left(8);
+            else if (!result.success)
+                qWarning() << "[Crawler] metadata indexing failed for" << t.hash.left(8) << result.error;
+        });
 
     // Let the crawler skip a metadata fetch for torrents already in the index.
-    d_->crawler->setKnownHashFilter([this](const QString& hash) { return d_->torrents->exists(hash); });
+    d_->crawler->setKnownHashFilter([this](const QString& hash) {
+        using Need = data::TorrentRepository::MetadataNeed;
+        using Decision = net::Crawler::MetadataDecision;
+        switch (d_->torrents->inspectMetadataNeed(hash)) {
+        case Need::New:
+        case Need::MissingFiles:
+            return Decision::Fetch;
+        case Need::Error:
+            return Decision::Error;
+        case Need::CompleteOrAmbiguous:
+            return Decision::Skip;
+        }
+        return Decision::Error;
+    });
 
     // A freshly indexed torrent triggers tracker scrapes.
     connect(d_->indexing.get(), &service::IndexingService::torrentIndexed, d_->trackers.get(),
