@@ -42,6 +42,7 @@ add_rats_test(test_database_snapshot)
 add_rats_test(test_database_transfer_resume)
 add_rats_test(test_voting_record)
 add_rats_test(test_scrape_queue)
+add_rats_test(test_crawler_sampling)
 
 # The single-instance guard lives in src/bootstrap (executable-only, not in
 # ratscore), so its source is compiled straight into the test.

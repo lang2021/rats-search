@@ -23,7 +23,9 @@
 #pragma pop_macro("emit")
 
 #include <QDebug>
+#include <QRandomGenerator>
 #include <QVector>
+#include <algorithm>
 #include <iterator>
 
 namespace rats::net {
@@ -42,14 +44,23 @@ Crawler::Crawler(P2PTransport* transport, QObject* parent)
     walkTimer_ = new QTimer(this);
     ignoreTimer_ = new QTimer(this);
     metadataQueueTimer_ = new QTimer(this);
+    sampleTimer_ = new QTimer(this);
+    clock_.start();
+    callbackGate_ = std::make_shared<CallbackGate>();
+    callbackGate_->crawler = this;
 
     connect(walkTimer_, &QTimer::timeout, this, &Crawler::onSpiderWalk);
     connect(ignoreTimer_, &QTimer::timeout, this, &Crawler::onIgnoreToggle);
     connect(metadataQueueTimer_, &QTimer::timeout, this, &Crawler::processMetadataQueue);
+    connect(sampleTimer_, &QTimer::timeout, this, &Crawler::onSampleTick);
 }
 
 Crawler::~Crawler()
 {
+    {
+        std::lock_guard<std::mutex> lock(callbackGate_->mutex);
+        callbackGate_->crawler = nullptr;
+    }
     stop();
 }
 
@@ -103,13 +114,16 @@ bool Crawler::start()
         bt->set_spider_mode(true);
 
         const uint64_t generation = ++generation_;
-        bt->set_spider_announce_callback([this, generation](const librats::InfoHash& info_hash, const librats::Address& peer) {
+        auto gate = callbackGate_;
+        bt->set_spider_announce_callback([gate, generation](const librats::InfoHash& info_hash, const librats::Address& peer) {
             std::array<uint8_t, 20> infoHash = info_hash;
             std::string ip = peer.ip.to_string();
             uint16_t port = peer.port;
-
-            QMetaObject::invokeMethod(
-                this, [this, infoHash, ip, port, generation]() { onAnnounce(infoHash, ip, port, generation); }, Qt::QueuedConnection);
+            std::lock_guard<std::mutex> lock(gate->mutex);
+            if (auto* crawler = gate->crawler)
+                QMetaObject::invokeMethod(crawler,
+                    [crawler, infoHash, ip, port, generation]() { crawler->onAnnounce(infoHash, ip, port, generation); },
+                    Qt::QueuedConnection);
         });
 
         qInfo() << "Spider mode enabled with announce callback";
@@ -120,6 +134,7 @@ bool Crawler::start()
         walkTimer_->start(walkIntervalMs_);
         ignoreTimer_->start(DEFAULT_IGNORE_INTERVAL_MS);
         metadataQueueTimer_->start(METADATA_QUEUE_INTERVAL_MS);
+        sampleTimer_->start(SAMPLE_INTERVAL_MS);
 
         emit statusChanged("Active");
 
@@ -142,6 +157,8 @@ void Crawler::stop()
         std::queue<MetadataRequest> empty;
         metadataQueue_.swap(empty);
     }
+    pendingHashes_.clear();
+    sampleInFlight_.clear();
     if (!running_) {
         return;
     }
@@ -152,6 +169,7 @@ void Crawler::stop()
     walkTimer_->stop();
     ignoreTimer_->stop();
     metadataQueueTimer_->stop();
+    sampleTimer_->stop();
 
 #ifdef RATS_SEARCH_FEATURES
     librats::Bittorrent* bt = bittorrent();
@@ -202,6 +220,74 @@ void Crawler::onSpiderWalk()
 #endif
 }
 
+void Crawler::onSampleTick()
+{
+#ifdef RATS_SEARCH_FEATURES
+    if (!running_ || !transport_->isDhtRunning() || !sampleInFlight_.empty()) return;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        if (metadataQueue_.size() >= MAX_METADATA_QUEUE) return;
+    }
+    auto* bt = bittorrent();
+    auto* dht = bt ? bt->dht_client() : nullptr;
+    if (!dht) return;
+    const auto candidates = dht->sample_candidates();
+    if (candidates.empty()) return;
+
+    const qint64 now = clock_.elapsed();
+    for (auto it = sampleNextAllowed_.begin(); it != sampleNextAllowed_.end(); ) {
+        if (it.value() <= now) it = sampleNextAllowed_.erase(it);
+        else ++it;
+    }
+    const size_t start = candidateCursor_ % candidates.size();
+    for (size_t offset = 0; offset < candidates.size(); ++offset) {
+        const size_t index = (start + offset) % candidates.size();
+        const auto& endpoint = candidates[index];
+        const QString key = QString::fromStdString(endpoint.to_string());
+        if (sampleNextAllowed_.contains(key)) continue;
+
+        librats::NodeId target{};
+        for (auto& byte : target) byte = static_cast<uint8_t>(QRandomGenerator::global()->bounded(256));
+        const uint64_t generation = generation_.load();
+        auto gate = callbackGate_;
+        sampleInFlight_.insert(key);
+        sampleNextAllowed_.insert(key, now + SAMPLE_FAILURE_DELAY_MS);
+        candidateCursor_ = index + 1;
+        if (dht->sample_infohashes(endpoint, target, [gate, key, generation](const auto& result) {
+                std::lock_guard<std::mutex> lock(gate->mutex);
+                if (auto* crawler = gate->crawler)
+                    QMetaObject::invokeMethod(crawler,
+                        [crawler, key, result, generation]() { crawler->onSampleResult(key, result, generation); },
+                        Qt::QueuedConnection);
+            })) {
+            ++sampleRequestCount_;
+        } else {
+            sampleInFlight_.erase(key);
+        }
+        return; // at most one query per timer tick
+    }
+#endif
+}
+
+void Crawler::onSampleResult(const QString& nodeKey, const librats::SampleInfohashesResult& result,
+    uint64_t generation)
+{
+#ifdef RATS_SEARCH_FEATURES
+    if (!running_ || generation != generation_) return;
+    sampleInFlight_.erase(nodeKey);
+    if (result.status != librats::SampleInfohashesStatus::Success) return;
+    ++sampleResponseCount_;
+    sampleNextAllowed_.insert(nodeKey, clock_.elapsed() +
+        std::max<qint64>(SAMPLE_MIN_DELAY_MS, static_cast<qint64>(result.interval) * 1000));
+    const size_t count = std::min(result.samples.size(), static_cast<size_t>(MAX_SAMPLES_PER_RESPONSE));
+    sampleHashCount_ += static_cast<int>(count);
+    for (size_t i = 0; i < count; ++i)
+        acceptInfoHash(result.samples[i], {}, 0, generation);
+#else
+    Q_UNUSED(nodeKey); Q_UNUSED(result); Q_UNUSED(generation);
+#endif
+}
+
 void Crawler::onIgnoreToggle()
 {
 #ifdef RATS_SEARCH_FEATURES
@@ -238,32 +324,41 @@ void Crawler::processMetadataQueue()
 void Crawler::onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::string& ip, uint16_t port,
     uint64_t generation)
 {
-    if (!running_ || generation != generation_)
-        return;
+    acceptInfoHash(infoHash, QString::fromStdString(ip), port, generation);
+}
+
+void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QString& peerIp,
+    uint16_t peerPort, uint64_t generation)
+{
+    if (!running_ || generation != generation_) return;
     // Convert info-hash to a lower-case hex string.
     QString hashHex;
+    hashHex.reserve(40);
     for (uint8_t byte : infoHash) {
         hashHex += QString("%1").arg(byte, 2, 16, QChar('0'));
     }
-
-    // De-duplicate: only announce and queue an info-hash the first time we see
-    // it.
-    {
-        std::lock_guard<std::mutex> lock(recentHashesMutex_);
-        if (recentHashes_.count(hashHex) > 0) {
-            qDebug() << "Already seen hash:" << hashHex << "- ignoring";
-            return;
+    if (pendingHashes_.count(hashHex)) {
+        // A later announce can upgrade a queued hash-only sample to the known
+        // resource peer. An already running BEP 9 request is left untouched.
+        if (!peerIp.isEmpty() && peerPort) {
+            std::lock_guard<std::mutex> lock(queueMutex_);
+            std::queue<MetadataRequest> pending;
+            while (!metadataQueue_.empty()) {
+                auto request = metadataQueue_.front();
+                metadataQueue_.pop();
+                if (request.infoHash == hashHex && request.peerIp.isEmpty()) {
+                    request.peerIp = peerIp;
+                    request.peerPort = peerPort;
+                }
+                pending.push(std::move(request));
+            }
+            metadataQueue_.swap(pending);
         }
-
-        recentHashes_.insert(hashHex);
-
-        // Bound the dedup set: drop the oldest half once it grows too large.
-        if (recentHashes_.size() > MAX_RECENT_HASHES) {
-            auto it = recentHashes_.begin();
-            std::advance(it, recentHashes_.size() / 2);
-            recentHashes_.erase(recentHashes_.begin(), it);
-        }
+        return;
     }
+    const auto retry = retryAfter_.constFind(hashHex);
+    if (retry != retryAfter_.cend() && retry->afterMs > clock_.elapsed() &&
+        !(peerPort && !peerIp.isEmpty() && !retry->hadPeer)) return;
 
     // Skip torrents we already have: fetching BEP 9 metadata for them would burn
     // a fetch slot and bandwidth only for the insert path to discard the result
@@ -274,17 +369,38 @@ void Crawler::onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::str
         return;
     }
 
-    qDebug() << "Discovered torrent:" << hashHex << "from peer" << QString::fromStdString(ip) << ":" << port;
-
-    // Queue a metadata fetch, remembering the announcing peer for the fast path.
+    // Both announce_peer and BEP 51 use this bounded queue. Only the former has
+    // a resource peer; sample-response nodes are DHT routers, not BT peers.
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
+        if (metadataQueue_.size() >= MAX_METADATA_QUEUE) {
+            if (peerIp.isEmpty() || !peerPort) return;
+            // An announce with a real resource peer is more useful than a
+            // queued hash-only sample when the bounded queue is full.
+            std::queue<MetadataRequest> pending;
+            bool evicted = false;
+            while (!metadataQueue_.empty()) {
+                auto queued = metadataQueue_.front();
+                metadataQueue_.pop();
+                if (!evicted && queued.peerIp.isEmpty()) {
+                    pendingHashes_.erase(queued.infoHash);
+                    evicted = true;
+                } else {
+                    pending.push(std::move(queued));
+                }
+            }
+            metadataQueue_.swap(pending);
+            if (!evicted) return;
+        }
         MetadataRequest request;
         request.infoHash = hashHex;
-        request.peerIp = QString::fromStdString(ip);
-        request.peerPort = port;
+        request.peerIp = peerIp;
+        request.peerPort = peerPort;
         metadataQueue_.push(request);
     }
+    retryAfter_.remove(hashHex);
+    pendingHashes_.insert(hashHex);
+    ++hashEnqueuedCount_;
 }
 
 void Crawler::fetchMetadata(const MetadataRequest& request)
@@ -292,6 +408,8 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
 #ifdef RATS_SEARCH_FEATURES
     librats::Bittorrent* bt = bittorrent();
     if (!bt) {
+        onMetadataFailed(request.infoHash, !request.peerIp.isEmpty(),
+            QStringLiteral("BT metadata engine unavailable"), generation_.load());
         return;
     }
 
@@ -302,24 +420,30 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
     const QString infoHash = request.infoHash;
     const QString peerIp = request.peerIp;
     const uint16_t peerPort = request.peerPort;
+    auto gate = callbackGate_;
 
     // librats manages the temporary torrent, the BEP 9 fetch and the timeout; it
     // invokes this callback exactly once (success or timeout) on a worker thread.
-    auto onResult = [this, infoHash, peerIp, peerPort, generation](
+    auto onResult = [gate, infoHash, peerIp, peerPort, generation](
                         const librats::bittorrent::TorrentInfo& torrentInfo, bool success, const std::string& err) {
-        const int remaining = --pendingFetches_;
-        --activeFetches_;
-        if (remaining == 0 && !running_) {
-            QMetaObject::invokeMethod(this, [this]() {
-                if (!running_ && pendingFetches_ == 0) emit statusChanged("Stopped");
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        auto* crawler = gate->crawler;
+        if (!crawler) return;
+        const int remaining = --crawler->pendingFetches_;
+        --crawler->activeFetches_;
+        if (remaining == 0 && !crawler->running_) {
+            QMetaObject::invokeMethod(crawler, [crawler]() {
+                if (!crawler->running_ && crawler->pendingFetches_ == 0) emit crawler->statusChanged("Stopped");
             }, Qt::QueuedConnection);
         }
-        if (!running_ || generation != generation_)
+        if (!crawler->running_ || generation != crawler->generation_)
             return;
 
         if (!success || !torrentInfo.is_valid()) {
-            qInfo() << "Failed to get metadata for" << infoHash.left(8) << ":" << QString::fromStdString(err);
-            fetchErrorCount_++;
+            const QString error = QString::fromStdString(err);
+            QMetaObject::invokeMethod(crawler, [crawler, infoHash, peerIp, error, generation]() {
+                crawler->onMetadataFailed(infoHash, !peerIp.isEmpty(), error, generation);
+            }, Qt::QueuedConnection);
             return;
         }
 
@@ -327,7 +451,9 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
         // finished value onto the Qt thread.
         const domain::Torrent torrent = toDomainTorrent(infoHash, torrentInfo, peerIp, static_cast<int>(peerPort));
 
-        QMetaObject::invokeMethod(this, [this, torrent, generation]() { onMetadataReceived(torrent, generation); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(crawler, [crawler, torrent, infoHash, generation]() {
+            crawler->onMetadataReceived(torrent, infoHash, generation);
+        }, Qt::QueuedConnection);
     };
 
     if (!peerIp.isEmpty() && peerPort > 0) {
@@ -345,13 +471,37 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
 #endif
 }
 
-void Crawler::onMetadataReceived(const rats::domain::Torrent& torrent, uint64_t generation)
+void Crawler::onMetadataReceived(const rats::domain::Torrent& torrent, const QString& infoHash,
+    uint64_t generation)
 {
     if (!running_ || generation != generation_)
         return;
+    pendingHashes_.erase(infoHash);
+    rememberCooldown(infoHash, true); // also covers an index filter rejecting the result
     discoveredCount_++;
     fetchSuccessCount_++;
     emit discovered(torrent);
+}
+
+void Crawler::onMetadataFailed(const QString& infoHash, bool hadPeer, const QString& error,
+    uint64_t generation)
+{
+    if (!running_ || generation != generation_) return;
+    pendingHashes_.erase(infoHash);
+    rememberCooldown(infoHash, hadPeer);
+    ++fetchErrorCount_;
+    qInfo() << "Failed to get metadata for" << infoHash.left(8) << ":" << error;
+}
+
+void Crawler::rememberCooldown(const QString& infoHash, bool hadPeer)
+{
+    if (retryAfter_.size() >= static_cast<qsizetype>(MAX_RETRY_HASHES)) {
+        auto oldest = retryAfter_.begin();
+        for (auto it = retryAfter_.begin(); it != retryAfter_.end(); ++it)
+            if (it->afterMs < oldest->afterMs) oldest = it;
+        retryAfter_.erase(oldest);
+    }
+    retryAfter_.insert(infoHash, RetryState{clock_.elapsed() + RETRY_DELAY_MS, hadPeer});
 }
 
 } // namespace rats::net

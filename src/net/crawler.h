@@ -4,6 +4,8 @@
 #include "domain/torrent.h"
 
 #include <QObject>
+#include <QElapsedTimer>
+#include <QHash>
 #include <QString>
 #include <QTimer>
 #include <array>
@@ -13,10 +15,12 @@
 #include <mutex>
 #include <queue>
 #include <set>
+#include <memory>
 #include <string>
 
 namespace librats {
 class Bittorrent;
+struct SampleInfohashesResult;
 }
 
 namespace rats::net {
@@ -56,6 +60,10 @@ public:
     int fetchSuccessCount() const { return fetchSuccessCount_.load(); }
     int fetchErrorCount() const { return fetchErrorCount_.load(); }
     int visitedNodesCount() const { return visitedNodesCount_.load(); }
+    int sampleRequestCount() const { return sampleRequestCount_.load(); }
+    int sampleResponseCount() const { return sampleResponseCount_.load(); }
+    int sampleHashCount() const { return sampleHashCount_.load(); }
+    int hashEnqueuedCount() const { return hashEnqueuedCount_.load(); }
 
     // Tuning
     void setWalkInterval(int intervalMs);
@@ -76,6 +84,7 @@ private slots:
     void onSpiderWalk();
     void onIgnoreToggle();
     void processMetadataQueue();
+    void onSampleTick();
 
 private:
     // A pending metadata fetch.
@@ -93,19 +102,44 @@ private:
     // announce_peer callback, already marshalled onto the Qt thread.
     void onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::string& ip, uint16_t port,
         uint64_t generation);
+    void acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QString& peerIp,
+        uint16_t peerPort, uint64_t generation);
+    void onSampleResult(const QString& nodeKey, const librats::SampleInfohashesResult& result,
+        uint64_t generation);
 
     // Kick off a BEP 9 metadata fetch (fast path if peer is known, else DHT).
     void fetchMetadata(const MetadataRequest& request);
 
     // Handle a completed metadata fetch (runs on the Qt thread).
-    void onMetadataReceived(const rats::domain::Torrent& torrent, uint64_t generation);
+    void onMetadataReceived(const rats::domain::Torrent& torrent, const QString& infoHash,
+        uint64_t generation);
+    void onMetadataFailed(const QString& infoHash, bool hadPeer, const QString& error,
+        uint64_t generation);
+    void rememberCooldown(const QString& infoHash, bool hadPeer);
 
     // Tuning defaults — no magic numbers scattered through the logic.
     static constexpr int DEFAULT_WALK_INTERVAL_MS = 100;
     static constexpr int DEFAULT_IGNORE_INTERVAL_MS = 1000;
     static constexpr int METADATA_QUEUE_INTERVAL_MS = 100;
     static constexpr int MAX_CONCURRENT_METADATA_FETCHES = 10;
-    static constexpr size_t MAX_RECENT_HASHES = 10000;
+    static constexpr int SAMPLE_INTERVAL_MS = 15000;
+    static constexpr int MAX_METADATA_QUEUE = 256;
+    static constexpr int MAX_SAMPLES_PER_RESPONSE = 64;
+    static constexpr int RETRY_DELAY_MS = 300000;
+    static constexpr int SAMPLE_FAILURE_DELAY_MS = 300000;
+    static constexpr int SAMPLE_MIN_DELAY_MS = 60000;
+    static constexpr size_t MAX_RETRY_HASHES = 10000;
+
+    struct CallbackGate {
+        std::mutex mutex;
+        Crawler* crawler = nullptr;
+    };
+    struct RetryState {
+        qint64 afterMs = 0;
+        bool hadPeer = false;
+    };
+
+    friend class TestCrawlerSampling;
 
     P2PTransport* transport_; // borrowed, non-owning
 
@@ -117,18 +151,28 @@ private:
     std::atomic<int> fetchSuccessCount_;
     std::atomic<int> fetchErrorCount_;
     std::atomic<int> visitedNodesCount_;
+    std::atomic<int> sampleRequestCount_ { 0 };
+    std::atomic<int> sampleResponseCount_ { 0 };
+    std::atomic<int> sampleHashCount_ { 0 };
+    std::atomic<int> hashEnqueuedCount_ { 0 };
 
     QTimer* walkTimer_;
     QTimer* ignoreTimer_;
     QTimer* metadataQueueTimer_;
+    QTimer* sampleTimer_;
+    QElapsedTimer clock_;
+    std::shared_ptr<CallbackGate> callbackGate_;
+    QHash<QString, qint64> sampleNextAllowed_;
+    std::set<QString> sampleInFlight_;
+    size_t candidateCursor_ = 0;
 
     int walkIntervalMs_;
 
     std::queue<MetadataRequest> metadataQueue_;
     std::mutex queueMutex_;
 
-    std::set<QString> recentHashes_;
-    std::mutex recentHashesMutex_;
+    std::set<QString> pendingHashes_; // queued or fetching in the current generation
+    QHash<QString, RetryState> retryAfter_;
 
     KnownHashFilter knownHashFilter_;
 };

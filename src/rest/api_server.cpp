@@ -1047,6 +1047,15 @@ QByteArray ApiServer::handleMetrics() const
             metrics << "# TYPE rats_spider_visited_nodes gauge";
             metrics << QString("rats_spider_visited_nodes %1 %2").arg(crawler->visitedNodesCount()).arg(timestamp);
 
+            metrics << "# TYPE rats_spider_sample_requests_total counter";
+            metrics << QString("rats_spider_sample_requests_total %1 %2").arg(crawler->sampleRequestCount()).arg(timestamp);
+            metrics << "# TYPE rats_spider_sample_responses_total counter";
+            metrics << QString("rats_spider_sample_responses_total %1 %2").arg(crawler->sampleResponseCount()).arg(timestamp);
+            metrics << "# TYPE rats_spider_sample_hashes_total counter";
+            metrics << QString("rats_spider_sample_hashes_total %1 %2").arg(crawler->sampleHashCount()).arg(timestamp);
+            metrics << "# TYPE rats_spider_hashes_enqueued_total counter";
+            metrics << QString("rats_spider_hashes_enqueued_total %1 %2").arg(crawler->hashEnqueuedCount()).arg(timestamp);
+
             metrics << "# HELP rats_spider_fetch_success_total Total successful metadata fetches";
             metrics << "# TYPE rats_spider_fetch_success_total counter";
             metrics << QString("rats_spider_fetch_success_total %1 %2").arg(crawler->fetchSuccessCount()).arg(timestamp);
