@@ -42,14 +42,31 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
         result.alreadyExists = true;
         result.torrent = existing;
 
-        // Backfill the file list when the stored copy has none but the incoming
-        // one does. This heals a metadata-only row into a complete torrent
-        // instead of leaving the two out of sync.
-        if (existing.files == 0 && !torrent.fileList.isEmpty()
-            && repository_->updateFiles(existing.hash, torrent.fileList)) {
-            existing.fileList = torrent.fileList;
-            existing.files = torrent.fileList.size();
-            result.torrent = existing;
+        // Backfill only when an explicit incoming list meets a row with no
+        // stored list. A Feed row may already advertise a nonzero file count.
+        if (!torrent.fileList.isEmpty()) {
+            const auto lookup = repository_->inspectFiles(existing.hash, existing.files);
+            if (lookup.state == data::TorrentRepository::FileLookup::State::Error) {
+                result.success = false;
+                result.alreadyExists = false;
+                result.error = QStringLiteral("File list lookup failed; completeness is unknown");
+                return result;
+            }
+            // A Feed row can carry a nonzero count without a file-list row.
+            // Backfill only on an explicit incoming list, not on rediscovery.
+            if (existing.files == 0 || lookup.state == data::TorrentRepository::FileLookup::State::Missing) {
+                data::TorrentRepository::WriteOutcome outcome;
+                if (!repository_->updateFiles(existing.hash, torrent.fileList, &outcome)) {
+                    result.success = false;
+                    result.alreadyExists = false;
+                    result.partialWrite = outcome == data::TorrentRepository::WriteOutcome::Partial;
+                    result.error = QStringLiteral("File list backfill failed; stored torrent may be incomplete");
+                    return result;
+                }
+                existing.fileList = torrent.fileList;
+                existing.files = torrent.fileList.size();
+                result.torrent = existing;
+            }
         }
 
         if (torrent.good > existing.good || torrent.bad > existing.bad) {
@@ -74,9 +91,15 @@ IndexingService::Result IndexingService::insert(domain::Torrent torrent)
 
     // The slot resolved above is still the one this hash maps to; add() only has
     // to trust it, not look it up again.
-    if (!repository_->add(torrent, slot)) {
-        result.error = slot.collided() ? QStringLiteral("Row id belongs to a different torrent")
-                                       : QStringLiteral("Database insert failed");
+    data::TorrentRepository::WriteOutcome outcome;
+    if (!repository_->add(torrent, slot, &outcome)) {
+        result.partialWrite = outcome == data::TorrentRepository::WriteOutcome::Partial;
+        if (slot.collided())
+            result.error = QStringLiteral("Row id belongs to a different torrent");
+        else if (result.partialWrite)
+            result.error = QStringLiteral("Torrent row saved but file list write failed");
+        else
+            result.error = QStringLiteral("Database insert failed");
         return result;
     }
 
@@ -162,10 +185,24 @@ IndexingService::BatchResult IndexingService::insertBatch(
         // files == 0 here would undo the backfill and leave the row claiming no
         // files while the files table holds the list — which also re-triggers
         // this branch (and its statistics delta) on every later import.
-        if (stored.files == 0 && !incoming.fileList.isEmpty()
-            && repository_->updateFiles(stored.hash, incoming.fileList)) {
-            stored.fileList = incoming.fileList;
-            stored.files = incoming.fileList.size();
+        if (!incoming.fileList.isEmpty()) {
+            const auto lookup = repository_->inspectFiles(stored.hash, stored.files);
+            if (lookup.state == data::TorrentRepository::FileLookup::State::Error) {
+                result.writeFailed = true;
+                result.error = QStringLiteral("File list lookup failed; batch completeness is unknown");
+                return result;
+            }
+            if (stored.files == 0 || lookup.state == data::TorrentRepository::FileLookup::State::Missing) {
+                data::TorrentRepository::WriteOutcome outcome;
+                if (!repository_->updateFiles(stored.hash, incoming.fileList, &outcome)) {
+                    result.writeFailed = true;
+                    result.partialWrite = outcome == data::TorrentRepository::WriteOutcome::Partial;
+                    result.error = QStringLiteral("File list backfill failed; batch is only partly applied");
+                    return result;
+                }
+                stored.fileList = incoming.fileList;
+                stored.files = incoming.fileList.size();
+            }
         }
 
         if (incoming.good > stored.good || incoming.bad > stored.bad) {
@@ -176,8 +213,16 @@ IndexingService::BatchResult IndexingService::insertBatch(
     }
 
     // 3. Everything genuinely new goes in as one multi-row write.
-    if (!fresh.isEmpty())
-        result.inserted = repository_->addMany(fresh);
+    if (!fresh.isEmpty()) {
+        data::TorrentRepository::WriteOutcome outcome;
+        result.inserted = repository_->addMany(fresh, &outcome);
+        if (outcome != data::TorrentRepository::WriteOutcome::Complete) {
+            result.writeFailed = true;
+            result.partialWrite = outcome == data::TorrentRepository::WriteOutcome::Partial;
+            result.error = result.partialWrite ? QStringLiteral("Torrent rows saved but file list batch failed")
+                                               : QStringLiteral("Torrent batch write failed; some rows may have been applied");
+        }
+    }
 
     return result;
 }

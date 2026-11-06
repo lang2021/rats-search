@@ -49,6 +49,7 @@ private slots:
     void testAddAndGet();
     void testExists();
     void testGetWithFiles();
+    void testFileLookupAndBackfill();
     void testSearchByName();
     void testSearchByHash();
     void testUpdateTrackerCounts();
@@ -71,6 +72,7 @@ private slots:
     void testImportIsAMergeNotADuplicate();
     void testCancelledExportLeavesNoFile();
     void testInterruptedImportResumesWhereItStopped();
+    void testFileWriteFailureIsReported();
 
 private:
     // Build a valid torrent with a distinct 40-hex hash derived from `n`.
@@ -207,7 +209,7 @@ void TestManticoreQueries::testGetWithFiles()
     t.files = 2;
     t.fileList.append(File { "folder/movie.mkv", 1900 });
     t.fileList.append(File { "folder/readme.txt", 100 });
-    QVERIFY(repo_->add(t));
+    QVERIFY(indexing_->insert(t).success);
     QVERIFY(waitForTorrent(t.hash));
     QVERIFY(waitForFiles(t.hash, 2));
 
@@ -216,6 +218,139 @@ void TestManticoreQueries::testGetWithFiles()
     QCOMPARE(got->fileList.size(), 2);
     QCOMPARE(got->fileList[0].path, QString("folder/movie.mkv"));
     QCOMPARE(got->fileList[0].size, (qint64)1900);
+}
+
+void TestManticoreQueries::testFileLookupAndBackfill()
+{
+    using State = TorrentRepository::FileLookup::State;
+    Torrent partial = makeTorrent(880001, "Feed style partial row");
+    partial.files = 2; // Feed can know the count without carrying the file list.
+    QVERIFY(repo_->add(partial));
+    QVERIFY(waitForTorrent(partial.hash));
+    const auto missing = repo_->inspectFiles(partial.hash, partial.files);
+    QCOMPARE(missing.state, State::Missing);
+    QVERIFY(!missing.countMatches.has_value());
+
+    // A backfill replaces one row by derived id, including on repetition.
+    const QVector<File> files { File { "pack/one.bin", 10 }, File { "pack/two.bin", 20 } };
+    QVERIFY(repo_->updateFiles(partial.hash, files));
+    QVERIFY(waitForFiles(partial.hash, 2));
+    QCOMPARE(repo_->inspectFiles(partial.hash, 2).state, State::Present);
+    QVERIFY(repo_->inspectFiles(partial.hash, 2).countMatches.value());
+    QVERIFY(!repo_->inspectFiles(partial.hash, 3).countMatches.value());
+    QVERIFY(repo_->updateFiles(partial.hash, files));
+    const auto rows = db_->query(QStringLiteral("SELECT id FROM files WHERE id = ?"),
+        { rats::data::rowIdFromHash(partial.hash) });
+    QCOMPARE(rows.size(), 1);
+
+    Torrent single = makeTorrent(880002, "Single file metadata");
+    single.fileList = { File { "one.iso", 100 } };
+    QVERIFY(repo_->add(single));
+    QVERIFY(waitForFiles(single.hash, 1));
+    const auto found = repo_->inspectFiles(single.hash, 1);
+    QCOMPARE(found.state, State::Present);
+    QCOMPARE(found.files.size(), 1);
+    QVERIFY(found.countMatches.value());
+
+    Torrent feed = makeTorrent(880003, "Feed record with count");
+    feed.files = 2;
+    QVERIFY(repo_->add(feed));
+    QVERIFY(waitForTorrent(feed.hash));
+    Torrent complete = feed;
+    complete.fileList = files;
+    const auto merged = indexing_->insert(complete);
+    QVERIFY(merged.success);
+    QVERIFY(merged.alreadyExists);
+    QVERIFY(waitForFiles(feed.hash, 2));
+    QVERIFY(repo_->inspectFiles(feed.hash, 2).countMatches.value());
+    // Repeating the explicit merge should leave the one file row intact.
+    QVERIFY(indexing_->insert(complete).success);
+    const auto mergedRows = db_->query(QStringLiteral("SELECT id FROM files WHERE id = ?"),
+        { rats::data::rowIdFromHash(feed.hash) });
+    QCOMPARE(mergedRows.size(), 1);
+}
+
+void TestManticoreQueries::testFileWriteFailureIsReported()
+{
+    using Outcome = TorrentRepository::WriteOutcome;
+    using State = TorrentRepository::FileLookup::State;
+    // A second disposable searchd isolates fault injection from every other
+    // integration case and from the user's database.
+    QTemporaryDir isolated;
+    QVERIFY(isolated.isValid());
+    Manticore searchd(isolated.path());
+    QVERIFY(searchd.start());
+    Database db(&searchd);
+    TorrentRepository repo(&db);
+    rats::service::IndexingService indexing(&repo, nullptr);
+
+    Torrent partial = makeTorrent(880010, "Partial record");
+    partial.files = 0;
+    QVERIFY(repo.add(partial));
+
+    Torrent imported = makeTorrent(880015, "Imported full metadata");
+    imported.fileList = { File { "import.bin", 7 } };
+    const QString dumpPath = isolated.filePath(QStringLiteral("fault.ratsdb"));
+    rats::service::DumpWriter writer;
+    QVERIFY(writer.open(dumpPath, rats::service::dump::Header {}));
+    QVERIFY(writer.write(imported));
+    QVERIFY(writer.finish());
+
+    // Remove the path column in this disposable files table while retaining its
+    // torrents table. A normal file write and a file-list SELECT now both fail.
+    // This forces actual Manticore write and read failures without production
+    // fault hooks or a second storage implementation.
+    QVERIFY(db.execute(QStringLiteral("ALTER TABLE files DROP COLUMN path")));
+
+    Torrent full = makeTorrent(880011, "BEP 9 full metadata");
+    full.fileList = { File { "payload.bin", 1024 } };
+    Outcome outcome = Outcome::Complete;
+    QVERIFY(!repo.add(full, &outcome));
+    QCOMPARE(outcome, Outcome::Partial);
+    QVERIFY(repo.exists(full.hash));
+    QCOMPARE(repo.inspectFiles(full.hash, full.files).state, State::Error);
+
+    const auto indexed = indexing.insert(makeTorrent(880012, "Indexing failure"));
+    QVERIFY(indexed.success); // fileless Feed-style records remain valid
+
+    Torrent backfill = partial;
+    backfill.fileList = full.fileList;
+    backfill.files = 1;
+    const auto failedBackfill = indexing.insert(backfill);
+    QVERIFY(!failedBackfill.success);
+    QVERIFY(!failedBackfill.alreadyExists);
+    QVERIFY(!failedBackfill.error.isEmpty());
+    QCOMPARE(repo.get(partial.hash)->files, 0);
+    outcome = Outcome::Complete;
+    QVERIFY(!repo.updateFiles(partial.hash, backfill.fileList, &outcome));
+    QCOMPARE(outcome, Outcome::Failed);
+    QCOMPARE(repo.get(partial.hash)->files, 0);
+
+    Torrent batchItem = makeTorrent(880013, "Batch full metadata");
+    batchItem.fileList = { File { "batch.bin", 5 } };
+    const auto batch = indexing.insertBatch({ batchItem });
+    QVERIFY(batch.writeFailed);
+    QVERIFY(batch.partialWrite);
+    QCOMPARE(batch.inserted, 1);
+    QVERIFY(repo.exists(batchItem.hash));
+    QVERIFY(!batch.error.isEmpty());
+
+    Torrent viaService = makeTorrent(880014, "BEP 9 through indexing");
+    viaService.fileList = { File { "index.bin", 11 } };
+    const auto serviceFailure = indexing.insert(viaService);
+    QVERIFY(!serviceFailure.success);
+    QVERIFY(serviceFailure.partialWrite);
+    QVERIFY(repo.exists(viaService.hash));
+
+    rats::service::DatabaseImporter importer(&indexing);
+    rats::service::CancelToken noCancel;
+    rats::service::DatabaseImporter::Options options;
+    options.applyFilters = false;
+    const auto importFailure = importer.run(dumpPath, options, noCancel, {});
+    QVERIFY(!importFailure.ok);
+    QVERIFY(!importFailure.error.isEmpty());
+    QVERIFY(repo.exists(imported.hash));
+    searchd.stop();
 }
 
 void TestManticoreQueries::testSearchByName()

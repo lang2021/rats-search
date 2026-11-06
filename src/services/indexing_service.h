@@ -26,6 +26,7 @@ public:
     struct Result {
         bool success = false;
         bool alreadyExists = false;
+        bool partialWrite = false; // a main/file row changed but requested files were not fully saved
         domain::Torrent torrent;
         QString error;
     };
@@ -41,6 +42,9 @@ public:
         // a birthday collision — ~5e-6 across a 10M index. Storing such a
         // torrent would overwrite an unrelated one, so it is skipped instead.
         int collided = 0;
+        bool writeFailed = false;
+        bool partialWrite = false;
+        QString error;
     };
 
     struct BatchOptions {

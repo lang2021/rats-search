@@ -46,6 +46,12 @@ DatabaseImporter::Result DatabaseImporter::run(
         result.merged += applied.merged;
         result.rejected += applied.rejected;
         result.collided += applied.collided;
+        if (applied.writeFailed) {
+            // The two tables have no shared transaction. Do not mark this frame
+            // committed or advance its resume offset when a file write fails.
+            result.error = applied.error;
+            return result;
+        }
         result.offset = reader.offset();
         if (onProgress)
             onProgress(result);

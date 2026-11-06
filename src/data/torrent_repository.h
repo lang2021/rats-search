@@ -23,6 +23,21 @@ class TorrentRepository : public QObject {
     Q_OBJECT
 
 public:
+    // A write can leave a main torrent row without its requested file list.
+    // There is no transaction spanning the two Manticore tables.
+    // Unknown is for a chunked batch whose main-table write failed: earlier
+    // chunks might have been committed, but the API cannot count them exactly.
+    enum class WriteOutcome { Complete, Partial, Failed, Unknown };
+
+    struct FileLookup {
+        enum class State { Present, Missing, Error };
+        State state = State::Error;
+        QVector<domain::File> files;
+        // Only set for a readable row when the caller supplies the main row's
+        // declared file count. Missing with count 0 remains ambiguous.
+        std::optional<bool> countMatches;
+    };
+
     struct SearchQuery {
         QString text;
         int offset = 0;
@@ -74,11 +89,11 @@ public:
     // Idempotent: a torrent that is already stored is left untouched and reports
     // success. Use update() to rewrite one. Refuses a torrent whose row id
     // belongs to a different hash.
-    bool add(const domain::Torrent& torrent);
+    bool add(const domain::Torrent& torrent, WriteOutcome* outcome = nullptr);
     // Same, reusing a slot the caller has already resolved. The slot must belong
     // to this torrent's hash; one that does not is refused rather than trusted,
     // so a stale or mismatched slot cannot turn into an overwrite.
-    bool add(const domain::Torrent& torrent, const RowSlot& slot);
+    bool add(const domain::Torrent& torrent, const RowSlot& slot, WriteOutcome* outcome = nullptr);
     bool update(const domain::Torrent& torrent);
     bool remove(const QString& hash);
     bool exists(const QString& hash);
@@ -104,8 +119,9 @@ public:
     // against the *index* (see getMany's `collided`) — this only guards the batch
     // against itself, which is the one collision no prior lookup can see.
     //
-    // Returns the number of rows written, which is what the statistics moved by.
-    int addMany(const QVector<domain::Torrent>& torrents);
+    // Returns the number of main rows reported written, which is what the
+    // statistics moved by. Inspect outcome to detect missing file-list writes.
+    int addMany(const QVector<domain::Torrent>& torrents, WriteOutcome* outcome = nullptr);
 
     // Search -------------------------------------------------------------------
     QVector<domain::SearchHit> searchTorrents(const SearchQuery& query);
@@ -124,13 +140,15 @@ public:
     // Files --------------------------------------------------------------------
     QVector<domain::File> filesOf(const QString& hash);
     QHash<QString, QVector<domain::File>> filesOf(const QStringList& hashes);
+    // Unlike filesOf(), this does not conflate no row with a failed query.
+    FileLookup inspectFiles(const QString& hash, std::optional<int> declaredCount = std::nullopt);
 
     // Partial updates ----------------------------------------------------------
     bool updateTrackerCounts(const QString& hash, int seeders, int leechers, int completed);
     // Replace the file list of an already-stored torrent and sync its file count
     // and statistics. Used to backfill a copy that was indexed from metadata
     // before its file list was available. No-op (returns false) on empty input.
-    bool updateFiles(const QString& hash, const QVector<domain::File>& files);
+    bool updateFiles(const QString& hash, const QVector<domain::File>& files, WriteOutcome* outcome = nullptr);
     bool mergeInfo(const QString& hash, const QJsonObject& info);
     bool updateClassification(const QString& hash, domain::ContentType type, domain::ContentCategory category);
 
@@ -185,7 +203,7 @@ signals:
 private:
     domain::Torrent rowToTorrent(const QVariantMap& row) const;
     QString buildNameIndex(const domain::Torrent& torrent) const;
-    void saveFiles(const QString& hash, const QVector<domain::File>& files);
+    bool saveFiles(const QString& hash, const QVector<domain::File>& files);
     // Column map for one torrents row, id included. Shared by add() and addMany().
     QVariantMap torrentRow(const domain::Torrent& torrent);
     // Column map for one files row (the "\n"-joined path/size blobs).

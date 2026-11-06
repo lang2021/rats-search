@@ -230,15 +230,19 @@ QVariantMap TorrentRepository::filesRow(const QString& hash, const QVector<File>
     return values;
 }
 
-bool TorrentRepository::add(const Torrent& t)
+bool TorrentRepository::add(const Torrent& t, WriteOutcome* outcome)
 {
+    if (outcome)
+        *outcome = WriteOutcome::Failed;
     if (!t.isValid())
         return false;
-    return add(t, resolve(t.hash));
+    return add(t, resolve(t.hash), outcome);
 }
 
-bool TorrentRepository::add(const Torrent& t, const RowSlot& slot)
+bool TorrentRepository::add(const Torrent& t, const RowSlot& slot, WriteOutcome* outcome)
 {
+    if (outcome)
+        *outcome = WriteOutcome::Failed;
     if (!t.isValid())
         return false;
 
@@ -257,6 +261,8 @@ bool TorrentRepository::add(const Torrent& t, const RowSlot& slot)
     }
     if (slot.taken) {
         qInfo() << "[TorrentRepository] already present:" << t.hash;
+        if (outcome)
+            *outcome = WriteOutcome::Complete;
         return true;
     }
 
@@ -270,10 +276,15 @@ bool TorrentRepository::add(const Torrent& t, const RowSlot& slot)
     if (!db_->replace(kTorrents, values))
         return false;
 
-    if (!t.fileList.isEmpty())
-        saveFiles(t.hash, t.fileList);
-
     bumpStatistics(1, t.files, t.size);
+    if (!t.fileList.isEmpty() && !saveFiles(t.hash, t.fileList)) {
+        qWarning() << "[TorrentRepository] torrent row saved but file list failed:" << t.hash.left(16);
+        if (outcome)
+            *outcome = WriteOutcome::Partial;
+        return false;
+    }
+    if (outcome)
+        *outcome = WriteOutcome::Complete;
     return true;
 }
 
@@ -587,8 +598,10 @@ QHash<QString, Torrent> TorrentRepository::getMany(const QStringList& hashes, QS
     return result;
 }
 
-int TorrentRepository::addMany(const QVector<Torrent>& torrents)
+int TorrentRepository::addMany(const QVector<Torrent>& torrents, WriteOutcome* outcome)
 {
+    if (outcome)
+        *outcome = WriteOutcome::Failed;
     if (torrents.isEmpty())
         return 0;
 
@@ -649,12 +662,18 @@ int TorrentRepository::addMany(const QVector<Torrent>& torrents)
     // single duplicate id, and an id already held in the index by *this* torrent
     // (a re-import, a retried batch) is a duplicate. The loop above is what keeps
     // a batch from carrying two rows with one id into this statement.
-    if (!db_->replaceMany(kTorrents, torrentRows))
+    if (!db_->replaceMany(kTorrents, torrentRows)) {
+        if (outcome)
+            *outcome = WriteOutcome::Unknown; // earlier SQL chunks may have committed
         return 0;
-    if (!fileRows.isEmpty())
-        db_->replaceMany(kFiles, fileRows);
+    }
+    const bool filesSaved = fileRows.isEmpty() || db_->replaceMany(kFiles, fileRows);
 
     bumpStatistics(torrentRows.size(), addedFiles, addedSize);
+    if (outcome)
+        *outcome = filesSaved ? WriteOutcome::Complete : WriteOutcome::Partial;
+    if (!filesSaved)
+        qWarning() << "[TorrentRepository] batch torrent rows saved but file lists failed";
     return torrentRows.size();
 }
 
@@ -686,6 +705,44 @@ QVector<File> TorrentRepository::filesOf(const QString& hash)
         rows.first().value(QStringLiteral("path")).toString(), rows.first().value(QStringLiteral("size")).toString());
 }
 
+TorrentRepository::FileLookup TorrentRepository::inspectFiles(const QString& hash, std::optional<int> declaredCount)
+{
+    FileLookup result;
+    const qint64 id = rowIdFromHash(hash);
+    if (id == 0)
+        return result;
+
+    bool ok = false;
+    const auto rows = db_->query(QStringLiteral("SELECT hash, path, size FROM files WHERE id = ?"), { id }, &ok);
+    if (!ok)
+        return result;
+    if (rows.isEmpty()) {
+        result.state = FileLookup::State::Missing;
+        return result;
+    }
+    if (rows.size() != 1 || !sameHash(rows.first().value(QStringLiteral("hash")).toString(), hash))
+        return result; // collided or unreadable row; do not call it complete
+
+    const QStringList paths = rows.first().value(QStringLiteral("path")).toString().split(QLatin1Char('\n'));
+    const QStringList sizes = rows.first().value(QStringLiteral("size")).toString().split(QLatin1Char('\n'));
+    if (paths.size() != sizes.size())
+        return result;
+    result.files.reserve(paths.size());
+    for (int i = 0; i < paths.size(); ++i) {
+        bool sizeOk = false;
+        const qint64 size = sizes.at(i).toLongLong(&sizeOk);
+        if (paths.at(i).isEmpty() || !sizeOk || size < 0) {
+            result.files.clear();
+            return result;
+        }
+        result.files.append(File { paths.at(i), size });
+    }
+    result.state = FileLookup::State::Present;
+    if (declaredCount)
+        result.countMatches = *declaredCount == result.files.size();
+    return result;
+}
+
 QHash<QString, QVector<File>> TorrentRepository::filesOf(const QStringList& hashes)
 {
     QHash<QString, QVector<File>> result;
@@ -707,15 +764,15 @@ QHash<QString, QVector<File>> TorrentRepository::filesOf(const QStringList& hash
     return result;
 }
 
-void TorrentRepository::saveFiles(const QString& hash, const QVector<File>& files)
+bool TorrentRepository::saveFiles(const QString& hash, const QVector<File>& files)
 {
     if (files.isEmpty())
-        return;
+        return true;
 
     // One statement: the files row carries the torrent's own id, so replacing it
     // in place is exact. The old delete + insert handed the row a fresh counter
     // id every time a file list was backfilled.
-    db_->replace(kFiles, filesRow(hash, files));
+    return db_->replace(kFiles, filesRow(hash, files));
 }
 
 // ---------------------------------------------------------------------------
@@ -733,8 +790,10 @@ bool TorrentRepository::updateTrackerCounts(const QString& hash, int seeders, in
         { { "id", slot.id } });
 }
 
-bool TorrentRepository::updateFiles(const QString& hash, const QVector<File>& files)
+bool TorrentRepository::updateFiles(const QString& hash, const QVector<File>& files, WriteOutcome* outcome)
 {
+    if (outcome)
+        *outcome = WriteOutcome::Failed;
     if (files.isEmpty())
         return false;
 
@@ -749,13 +808,19 @@ bool TorrentRepository::updateFiles(const QString& hash, const QVector<File>& fi
         return false; // id collision
     const int oldCount = rows.first().value(QStringLiteral("files")).toInt();
 
-    saveFiles(hash, files); // replaces the file row for this hash
+    if (!saveFiles(hash, files))
+        return false; // the count must not claim that a failed file write succeeded
 
-    if (!db_->update(kTorrents, { { "files", files.size() } }, { { "id", id } }))
+    if (!db_->update(kTorrents, { { "files", files.size() } }, { { "id", id } })) {
+        if (outcome)
+            *outcome = WriteOutcome::Partial; // file row changed; count did not
         return false;
+    }
 
     bumpStatistics(0, files.size() - oldCount, 0);
     emit torrentUpdated(hash);
+    if (outcome)
+        *outcome = WriteOutcome::Complete;
     return true;
 }
 
