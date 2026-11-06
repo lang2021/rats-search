@@ -55,6 +55,34 @@ private slots:
         QVERIFY(crawler.metadataQueue_.empty());
     }
 
+    void lateAnnounceKeepsOneInFlightTaskAndOldGenerationIsIgnored()
+    {
+        Crawler crawler(nullptr);
+        crawler.running_ = true;
+        crawler.generation_ = 1;
+        librats::SampleInfohashesResult reply;
+        reply.status = librats::SampleInfohashesStatus::Success;
+        reply.samples = {hash(10)};
+        crawler.onSampleResult("node-a", reply, 1);
+        QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
+        const QString key = crawler.metadataQueue_.front().infoHash;
+        crawler.metadataQueue_.pop(); // the request is now fetching
+        crawler.activeMetadataTaskIds_.insert(key, 42);
+
+        crawler.onAnnounce(hash(10), "127.0.0.2", 6881, 1);
+        crawler.onAnnounce(hash(10), "127.0.0.2", 6881, 1);
+        QVERIFY(crawler.metadataQueue_.empty());
+        QCOMPARE(crawler.hashEnqueuedCount(), 1);
+        QCOMPARE(crawler.activeMetadataTaskIds_.value(key), uint64_t(42));
+
+        crawler.stop();
+        QVERIFY(crawler.activeMetadataTaskIds_.empty());
+        crawler.running_ = true;
+        crawler.onAnnounce(hash(10), "127.0.0.2", 6881, 1);
+        QVERIFY(crawler.metadataQueue_.empty()); // old Node callback cannot enter a new run
+        crawler.stop();
+    }
+
     void sampleAndAnnounceUseSameQueue()
     {
         Crawler crawler(nullptr);

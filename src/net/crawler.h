@@ -174,6 +174,7 @@ private:
     std::mutex queueMutex_;
 
     std::set<QString> pendingHashes_; // queued or fetching in the current generation
+    QHash<QString, uint64_t> activeMetadataTaskIds_; // only fetching; guards late peer hints
     QHash<QString, RetryState> retryAfter_;
 
     KnownHashFilter knownHashFilter_;

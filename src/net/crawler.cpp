@@ -23,6 +23,7 @@
 #pragma pop_macro("emit")
 
 #include <QDebug>
+#include <QHostAddress>
 #include <QRandomGenerator>
 #include <QVector>
 #include <algorithm>
@@ -167,6 +168,7 @@ void Crawler::stop()
         metadataQueue_.swap(empty);
     }
     pendingHashes_.clear();
+    activeMetadataTaskIds_.clear();
     sampleInFlight_.clear();
     if (!running_) {
         return;
@@ -334,7 +336,12 @@ void Crawler::processMetadataQueue()
 void Crawler::onAnnounce(const std::array<uint8_t, 20>& infoHash, const std::string& ip, uint16_t port,
     uint64_t generation)
 {
-    acceptInfoHash(infoHash, QString::fromStdString(ip), port, generation);
+    const QString peerIp = QString::fromStdString(ip);
+    const QHostAddress address(peerIp);
+    const bool validPeer = port != 0 && !address.isNull()
+        && address != QHostAddress(QHostAddress::AnyIPv4)
+        && address != QHostAddress(QHostAddress::AnyIPv6);
+    acceptInfoHash(infoHash, validPeer ? peerIp : QString(), validPeer ? port : 0, generation);
 }
 
 void Crawler::onGetPeers(const std::array<uint8_t, 20>& infoHash, uint64_t generation)
@@ -354,20 +361,33 @@ void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QStr
     }
     if (pendingHashes_.count(hashHex)) {
         // A later announce can upgrade a queued hash-only sample to the known
-        // resource peer. An already running BEP 9 request is left untouched.
+        // resource peer. A running task receives the hint using its own id.
         if (!peerIp.isEmpty() && peerPort) {
-            std::lock_guard<std::mutex> lock(queueMutex_);
-            std::queue<MetadataRequest> pending;
-            while (!metadataQueue_.empty()) {
-                auto request = metadataQueue_.front();
-                metadataQueue_.pop();
-                if (request.infoHash == hashHex && request.peerIp.isEmpty()) {
-                    request.peerIp = peerIp;
-                    request.peerPort = peerPort;
+            bool queued = false;
+            {
+                std::lock_guard<std::mutex> lock(queueMutex_);
+                std::queue<MetadataRequest> pending;
+                while (!metadataQueue_.empty()) {
+                    auto request = metadataQueue_.front();
+                    metadataQueue_.pop();
+                    if (request.infoHash == hashHex) {
+                        queued = true;
+                        if (request.peerIp.isEmpty()) {
+                            request.peerIp = peerIp;
+                            request.peerPort = peerPort;
+                        }
+                    }
+                    pending.push(std::move(request));
                 }
-                pending.push(std::move(request));
+                metadataQueue_.swap(pending);
             }
-            metadataQueue_.swap(pending);
+            if (!queued) {
+                const uint64_t taskId = activeMetadataTaskIds_.value(hashHex, 0);
+                if (taskId) {
+                    if (auto* bt = bittorrent())
+                        bt->add_metadata_peer(hashHex.toStdString(), taskId, peerIp.toStdString(), peerPort);
+                }
+            }
         }
         return;
     }
@@ -472,15 +492,17 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
         }, Qt::QueuedConnection);
     };
 
+    uint64_t taskId = 0;
     if (!peerIp.isEmpty() && peerPort > 0) {
         // Fast path: fetch directly from the announcing peer (no DHT search).
         qDebug() << "Fetching metadata for" << infoHash.left(8) << "directly from" << peerIp << ":" << peerPort;
-        bt->get_torrent_metadata_from_peer(infoHash.toStdString(), peerIp.toStdString(), peerPort, onResult);
+        taskId = bt->get_torrent_metadata_from_peer(infoHash.toStdString(), peerIp.toStdString(), peerPort, onResult);
     } else {
         // Slow path: let librats find peers via the DHT.
         qDebug() << "Fetching metadata for" << infoHash.left(8) << "via DHT search";
-        bt->get_torrent_metadata(infoHash.toStdString(), onResult);
+        taskId = bt->get_torrent_metadata(infoHash.toStdString(), onResult);
     }
+    if (taskId) activeMetadataTaskIds_.insert(infoHash, taskId);
 #else
     Q_UNUSED(request);
     qWarning() << "BitTorrent features not enabled, cannot fetch metadata";
@@ -492,6 +514,7 @@ void Crawler::onMetadataReceived(const rats::domain::Torrent& torrent, const QSt
 {
     if (!running_ || generation != generation_)
         return;
+    activeMetadataTaskIds_.remove(infoHash);
     pendingHashes_.erase(infoHash);
     rememberCooldown(infoHash, true); // also covers an index filter rejecting the result
     discoveredCount_++;
@@ -503,6 +526,7 @@ void Crawler::onMetadataFailed(const QString& infoHash, bool hadPeer, const QStr
     uint64_t generation)
 {
     if (!running_ || generation != generation_) return;
+    activeMetadataTaskIds_.remove(infoHash);
     pendingHashes_.erase(infoHash);
     rememberCooldown(infoHash, hadPeer);
     ++fetchErrorCount_;
