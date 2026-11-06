@@ -1,11 +1,17 @@
+.search-intro { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; margin:0 0 16px; }
+.search-intro h1 { margin:0; font-size:22px; font-weight:500; color:var(--rs-text); }
+.search-intro p { margin:5px 0 0; color:var(--rs-subtle); font-size:10px; letter-spacing:.26em; }
+.search-intro > span { color:var(--rs-subtle); font-size:11px; }
+@media (max-width:600px) { .search-intro { align-items:flex-start; flex-direction:column; } }
+
 .mat-expansion-panel {
-  margin-top: 14px;
-  margin-right: 14px;
+  margin-top: 8px;
+  margin-right: 8px;
   section {
     margin-left: -10px;
   }
   &.panel-content-type {
-    margin-top: 20px;
+    margin-top: 8px;
     section {
       margin-left: 0;
     }
@@ -50,8 +56,8 @@
 }
 
 .search-form {
-  padding-top: 20px;
-  padding-bottom: 10px;
+  padding-top: 5px;
+  padding-bottom: 5px;
   position: relative;
   clear: both;
   display: flex;
@@ -60,8 +66,8 @@
     display: inline-flex;
     flex-direction: column;
     position: relative;
-    margin-left: 20px;
-    padding-bottom: 20px;
+    margin-left: 8px;
+    padding-bottom: 6px;
     button {
       top: 8px;
     }
@@ -73,7 +79,7 @@
       }
     }
     &.form-field-container-search-query {
-      width: 300px;
+      width: min(320px, calc(100vw - 90px));
       button {
         position: absolute;
         right: 0;
@@ -90,8 +96,8 @@
 
 app-paginator {
   float: right;
-  padding-top: 14px;
-  padding-bottom: 20px;
+  padding-top: 7px;
+  padding-bottom: 8px;
 }
 
 .remote-search-panel { clear: both; margin: 18px 8px 24px; border: 1px solid var(--rs-border, #777); color: var(--rs-text, inherit); }

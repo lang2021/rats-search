@@ -11,7 +11,7 @@ export type Themes<Keys extends string = string> = {
 const _themes = {
   classic: {
     key: "classic" as const,
-    label: "Classic",
+    label: "Light Industrial",
     dark: false,
   },
   clean: {
@@ -26,7 +26,7 @@ const _themes = {
   },
   tundra: {
     key: "tundra" as const,
-    label: "Tundra",
+    label: "Dark Industrial",
     dark: true,
   },
 };

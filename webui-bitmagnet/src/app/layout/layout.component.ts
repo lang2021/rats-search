@@ -18,10 +18,16 @@ import { BreakpointsService } from "./breakpoints.service";
   imports: [AppModule, HealthModule, ThemeEmitterComponent, VersionComponent],
 })
 export class LayoutComponent {
+  menuOpen = false;
   themeManager = inject(ThemeManager);
   translateManager = inject(TranslateManager);
   breakpoints = inject(BreakpointsService);
   title = inject(Title);
   router = inject(Router);
   health = inject(HealthService);
+  get headerTitle(): string {
+    if (this.router.url === "/search" || this.router.url.startsWith("/search?")) return "资源搜索";
+    if (this.router.url.startsWith("/torrent/")) return "资源详情";
+    return this.title.getTitle().split(" - ")[0];
+  }
 }

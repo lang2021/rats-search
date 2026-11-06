@@ -72,13 +72,25 @@ async function authorizationHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+export function summarizeRatsEvent(frame: unknown): { name: string; detail: string } | null {
+  if (!frame || typeof frame !== "object") return null;
+  const message = frame as { event?: unknown; data?: unknown };
+  if (typeof message.event !== "string") return null;
+  const data = message.data && typeof message.data === "object" ? message.data as Record<string, unknown> : {};
+  if (Array.isArray(data["changedKeys"])) return { name: message.event, detail: `变更：${data["changedKeys"].join(", ")}` };
+  if (Array.isArray(data["torrents"])) return { name: message.event, detail: `结果：${data["torrents"].length} 条` };
+  const fields = ["hash", "searchId", "processed", "total", "percent", "cancelled", "good", "bad", "status"];
+  const detail = fields.filter(key => data[key] != null).map(key => `${key}: ${String(data[key])}`).join(" · ");
+  return { name: message.event, detail: detail || "事件已接收" };
+}
+
 /** The existing Rats Search HTTP API uses method names under /api/. */
 export async function ratsCall<T>(
   method: string,
   params: Record<string, unknown> = {},
   signal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(`/api/${method}`, {
+  const response = await fetch(`${ratsApiBaseUrl}/api/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...await authorizationHeaders() },
     body: JSON.stringify(params),
@@ -101,6 +113,7 @@ export async function ratsSafeSearch(signal?: AbortSignal): Promise<boolean> {
 }
 
 export async function ratsReady(signal?: AbortSignal): Promise<boolean> {
-  const response = await fetch("/readyz", { signal, headers: await authorizationHeaders() });
+  const response = await fetch(`${ratsApiBaseUrl}/readyz`, { signal, headers: await authorizationHeaders() });
   return response.ok;
 }
+import { ratsApiBaseUrl } from "../../environments/environment";

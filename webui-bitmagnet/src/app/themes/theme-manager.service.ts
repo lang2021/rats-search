@@ -9,7 +9,7 @@ import {
   themes,
 } from "./theme-registry";
 
-const LOCAL_STORAGE_KEY = "bitmagnet-theme";
+const LOCAL_STORAGE_KEY = "rats-search-theme";
 
 @Injectable({ providedIn: "root" })
 export class ThemeManager {
@@ -21,7 +21,7 @@ export class ThemeManager {
   );
   public selectedTheme$ = this.selectedThemeSubject.asObservable();
   public selectedTheme?: ThemeKey;
-  public themes = Object.values(themes);
+  public themes = [themes.classic, themes.tundra];
 
   constructor() {
     this.setActiveTheme(this.getPreferredTheme());
@@ -43,9 +43,7 @@ export class ThemeManager {
   };
 
   getAutoTheme = (): ThemeKey => {
-    return this.windowMatchMediaPrefersDark()?.matches
-      ? defaultDarkTheme
-      : defaultLightTheme;
+    return defaultDarkTheme;
   };
 
   setTheme = (theme: string) => {
@@ -60,6 +58,8 @@ export class ThemeManager {
     } else {
       this.selectedTheme = theme as ThemeKey;
     }
+    const industrial = theme === "tundra" ? "dark-industrial" : "light-industrial";
+    this.document.documentElement.setAttribute("data-theme", industrial);
     this.document.documentElement.setAttribute("data-bitmagnet-theme", theme);
     this.selectedThemeSubject.next(this.selectedTheme);
   };

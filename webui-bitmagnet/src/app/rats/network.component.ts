@@ -48,7 +48,7 @@ type Database = {
           >
           <mat-card
             ><mat-card-content
-              ><strong>DHT 爬虫</strong
+              ><strong>DHT 网络</strong
               ><span>{{
                 p2p?.dhtRunning ? "运行中" : "已停止"
               }}</span></mat-card-content
@@ -91,38 +91,34 @@ type Database = {
   `,
   styles: [
     `
-      .page {
-        margin: 20px;
-      }
-      .page > mat-card-content {
-        padding: 20px;
-      }
+      .page { margin: 0; }
+      .page > mat-card-content { padding: 16px; }
+      .page mat-card-header { min-height: 42px; box-sizing: border-box; padding: 10px 16px; background: var(--rs-raised); border-bottom: 1px solid var(--rs-border); color: var(--rs-accent); }
+      .page mat-card-title { font-size: 11px; letter-spacing: .24em; color: var(--rs-accent); }
+      .page mat-card-title mat-icon { font-size: 17px; width: 18px; height: 18px; vertical-align: middle; }
       .summary {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
-        gap: 14px;
+        gap: 10px;
       }
       .summary mat-card-content {
         display: flex;
         flex-direction: column;
-        gap: 10px;
-        padding: 18px;
+        gap: 12px;
+        padding: 16px;
       }
-      .summary span {
-        font-size: 1.3rem;
-      }
-      h3 {
-        margin-top: 28px;
-      }
+      .summary strong { color: var(--rs-subtle); font-size: 10px; font-weight: 500; letter-spacing: .19em; }
+      .summary span { color: var(--rs-accent); font: 500 25px ui-monospace,monospace; }
+      h3 { margin: 16px 0 0; padding: 12px 14px; background: var(--rs-raised); border: 1px solid var(--rs-border); color: var(--rs-accent); font-size: 10px; letter-spacing: .25em; }
+      h3 + p { border: 1px solid var(--rs-border); border-top: 0; margin: 0; padding: 13px 14px; color: var(--rs-muted); font-size: 12px; }
       .peer {
         display: flex;
         align-items: center;
         gap: 8px;
-        margin: 8px 0;
+        padding: 9px 14px; border: 1px solid var(--rs-border); border-top: 0; font-size: 12px;
       }
-      .error {
-        color: #d32f2f;
-      }
+      .error { color: var(--rs-danger); }
+      button { margin-top: 15px; border-radius: 0; border-color: var(--rs-accent); color: var(--rs-accent); }
     `,
   ],
 })

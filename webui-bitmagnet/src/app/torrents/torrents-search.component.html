@@ -8,6 +8,7 @@
       t('routes.torrents'),
     ]"
   />
+  <div class="search-intro"><div><h1>资源搜索</h1><p>LOCAL INDEX · RATS PEER SEARCH</p></div><span>默认仅查询本机索引；向节点发送关键词须手动选择</span></div>
   <mat-drawer-container class="drawer-container">
     <mat-drawer
       #drawer
@@ -176,7 +177,7 @@
           <button mat-stroked-button type="button" (click)="submitSearch()">搜索</button>
         </div>
         <div class="form-field-container form-field-container-order-by">
-          <mat-form-field subscriptSizing="dynamic">
+          <mat-form-field subscriptSizing="dynamic" floatLabel="always">
             <mat-label>{{ t("torrents.order_by") }}</mat-label>
             <mat-select
               [value]="controls.orderBy.field"

@@ -1,60 +1,36 @@
-.mat-toolbar.toolbar-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  --mat-toolbar-title-text-size: 22px;
-  --mat-toolbar-standard-height: 56px;
-  --mat-icon-color: #fff;
-  padding: 0 20px;
-  h1 {
-    margin-top: -2px;
-    //margin-left: 20px;
-    margin-right: 20px;
-    a {
-      text-decoration: none;
-    }
-    mat-icon {
-      position: relative;
-      top: 4px;
-    }
-    .name {
-      margin-left: 10px;
-      margin-right: 16px;
-    }
-    app-version {
-      font-size: 13px;
-    }
-  }
-  .mdc-button {
-    margin-left: 6px;
-    --mdc-text-button-label-text-weight: bold;
-    --mat-text-button-horizontal-padding: 12px;
-    --mdc-text-button-container-height: 30px;
-  }
-  --mdc-text-button-label-text-size: 15px;
-  nav {
-    position: absolute;
-    left: 340px;
-    top: 0;
-    height: 56px;
-    padding-top: 14px;
-    a {
-      margin-right: 10px;
-    }
-    mat-icon[data-mat-icon-name="magnet"] {
-      margin-top: -5px;
-      overflow: visible;
-    }
-  }
+:host { display: block; }
+.station-shell { display: flex; min-height: 100vh; background: var(--rs-bg); color: var(--rs-text); }
+.station-sidebar { width: 220px; flex: 0 0 220px; background: var(--rs-sidebar); border-right: 1px solid var(--rs-border); display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; z-index: 30; box-sizing: border-box; padding: 20px 14px; }
+.station-brand { height: 58px; display: flex; align-items: flex-start; gap: 8px; color: var(--rs-text); text-decoration: none; }
+.station-brand img { width: 38px; height: 36px; object-fit: cover; object-position: left; filter: var(--rs-logo-filter); }
+.station-brand strong { font-size: 14px; letter-spacing: .09em; white-space: nowrap; }
+.station-brand small { display: block; margin-top: 5px; font-size: 8px; letter-spacing: .33em; color: var(--rs-subtle); white-space: nowrap; }
+.nav-caption { color: var(--rs-subtle); font-size: 10px; letter-spacing: .3em; padding: 10px 14px 4px; margin: 8px 0; }
+nav { display: grid; gap: 3px; }
+nav a { color: var(--rs-muted); text-decoration: none; padding: 10px 13px; min-height: 20px; display: flex; gap: 14px; align-items: center; border: 1px solid transparent; font-size: 12px; letter-spacing: .13em; }
+nav a span { color: var(--rs-subtle); font: 10px ui-monospace, monospace; }
+nav a:hover { color: var(--rs-text); background: var(--rs-raised); }
+nav a.active { background: var(--rs-accent-soft); color: var(--rs-accent); border-color: var(--rs-accent); }
+nav a.active span { color: var(--rs-accent); }
+.sidebar-foot { margin-top: auto; padding: 17px 10px 2px; border-top: 1px solid var(--rs-border); font-size: 10px; letter-spacing: .14em; }
+.sidebar-foot small { display: block; color: var(--rs-subtle); padding-left: 18px; margin-top: 5px; letter-spacing: .22em; }
+.status-dot { display: inline-block; background: var(--rs-accent); width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; }
+.station-main { flex: 1; min-width: 0; }
+.station-header { height: 76px; box-sizing: border-box; display: flex; align-items: center; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--rs-border); }
+.station-heading { margin-right: 10px; }
+.station-heading strong { font-size: 19px; font-weight: 500; display: block; }
+.station-heading small { color: var(--rs-subtle); font-size: 10px; letter-spacing: .27em; display: block; margin-top: 4px; white-space: nowrap; }
+.station-header button { color: var(--rs-text); }
+.station-content { padding: 18px 20px 36px; max-width: 1500px; margin: auto; }
+.mobile-menu, .sidebar-scrim { display: none; }
+@media (max-width: 900px) {
+  .station-sidebar { position: fixed; left: 0; transform: translateX(-100%); transition: transform .16s ease; }
+  .station-sidebar.open { transform: translateX(0); }
+  .sidebar-scrim { display: block; position: fixed; inset: 0; background: #0009; z-index: 20; }
+  .mobile-menu { display: inline-flex; }
+  .station-header { height: 62px; padding: 0 12px; }
+  .station-heading strong { font-size: 16px; }
+  .station-heading small { display: none; }
+  .station-content { padding: 12px; }
 }
-
-.app-content {
-  z-index: 1;
-  padding-bottom: 10px;
-}
-
-.layout-header-menu {
-  a.active {
-    font-weight: bold;
-  }
-}
+@media (prefers-reduced-motion: reduce) { .station-sidebar { transition: none; } }
