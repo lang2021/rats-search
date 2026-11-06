@@ -64,6 +64,10 @@ public:
     int sampleResponseCount() const { return sampleResponseCount_.load(); }
     int sampleHashCount() const { return sampleHashCount_.load(); }
     int hashEnqueuedCount() const { return hashEnqueuedCount_.load(); }
+    int queuedFetches() const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return static_cast<int>(metadataQueue_.size());
+    }
     // Application calls this only after IndexingService confirms a new row or
     // file-list backfill. BEP 9 success alone is counted by fetchSuccessCount.
     void recordIndexed() { ++discoveredCount_; }
@@ -173,7 +177,7 @@ private:
     int walkIntervalMs_;
 
     std::queue<MetadataRequest> metadataQueue_;
-    std::mutex queueMutex_;
+    mutable std::mutex queueMutex_;
 
     std::set<QString> pendingHashes_; // queued or fetching in the current generation
     QHash<QString, uint64_t> activeMetadataTaskIds_; // only fetching; guards late peer hints

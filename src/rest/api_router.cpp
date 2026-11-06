@@ -8,6 +8,7 @@
 #include "domain/peer.h"
 #include "domain/torrent_codec.h"
 #include "net/librats_convert.h"
+#include "net/crawler.h"
 #include "net/p2p_transport.h"
 #include "net/torrent_engine.h"
 #include "peer/peer_api.h"
@@ -1130,6 +1131,27 @@ void ApiRouter::registerMethods()
         result["size"] = stats.totalSize;
         result["peers"] = app_->transport() ? app_->transport()->peerCount() : 0;
         respond(Result::success(result));
+    });
+
+    // Process-local crawler counters. Metadata success is distinct from a
+    // committed index row; discoveredCount also includes file-list backfills.
+    add("stats.crawler", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        const auto* crawler = app_->crawler();
+        if (!crawler) {
+            respond(Result::failure(QStringLiteral("Crawler statistics unavailable")));
+            return;
+        }
+        respond(Result::success(QJsonObject {
+            { "sampleRequests", crawler->sampleRequestCount() },
+            { "sampleResponses", crawler->sampleResponseCount() },
+            { "sampleHashes", crawler->sampleHashCount() },
+            { "hashesEnqueued", crawler->hashEnqueuedCount() },
+            { "activeFetches", crawler->activeFetches() },
+            { "queuedFetches", crawler->queuedFetches() },
+            { "fetchSuccesses", crawler->fetchSuccessCount() },
+            { "fetchErrors", crawler->fetchErrorCount() },
+            { "indexedOrBackfilled", crawler->discoveredCount() },
+        }));
     });
 
     add("stats.database", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {

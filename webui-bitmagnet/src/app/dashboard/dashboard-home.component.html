@@ -26,8 +26,26 @@
       <div class="data-row" *ngFor="let peer of peers.slice(0,3)"><span>{{peer.peerId || peer.address || peer.host || '未知节点'}}</span><b>已连接</b></div>
     </section>
   </div>
+  <div class="crawler-grid" aria-label="探险者采集概览">
+    <section class="panel"><div class="panel-title"><h2>资源发现</h2><span>本进程累计</span></div>
+      <div class="data-row"><span>BEP 51 请求</span><b>{{crawler?.sampleRequests ?? '—'}}</b></div>
+      <div class="data-row"><span>BEP 51 有效响应</span><b>{{crawler?.sampleResponses ?? '—'}}</b></div>
+      <div class="data-row"><span>BEP 51 样本 Hash 条目（含重复）</span><b>{{crawler?.sampleHashes ?? '—'}}</b></div>
+      <div class="data-row"><span>Hash 入队次数（含重试及被动来源）</span><b>{{crawler?.hashesEnqueued ?? '—'}}</b></div>
+      <p class="empty" *ngIf="crawler && crawler.sampleRequests === 0 && crawler.hashesEnqueued === 0">本进程尚无采集记录。</p>
+      <p class="empty">被动查询与公告目前没有独立来源计数。</p>
+    </section>
+    <section class="panel"><div class="panel-title"><h2>元数据调查</h2><span>任务状态与本进程累计</span></div>
+      <div class="data-row"><span>在途元数据任务（含停采待结束）</span><b>{{crawler?.activeFetches ?? '—'}}</b></div>
+      <div class="data-row"><span>等待队列</span><b>{{crawler?.queuedFetches ?? '—'}}</b></div>
+      <div class="data-row"><span>BEP 9 成功 / 失败</span><b>{{crawler ? crawler.fetchSuccesses + ' / ' + crawler.fetchErrors : '—'}}</b></div>
+      <div class="data-row"><span>采集新入库或文件补齐</span><b>{{crawler?.indexedOrBackfilled ?? '—'}}</b></div>
+      <div class="data-row"><span>本地索引资源总数</span><b>{{stats?.torrents ?? '—'}}</b></div>
+      <p class="empty">元数据成功不等于入库成功；失败数不含停采后的取消。</p>
+    </section>
+  </div>
   <section class="panel status-panel"><div class="panel-title"><h2>系统状态</h2><span>HEALTH CHECK</span></div>
-    <div class="status-grid"><div><span>HTTP API</span><b [class.ok]="ready">{{ready === undefined ? '—' : ready ? '就绪' : '不可用'}}</b></div><div><span>Rats P2P</span><b [class.ok]="p2p?.running">{{p2p ? (p2p.running ? '运行中' : '未运行') : '—'}}</b></div><div><span>DHT Socket</span><b [class.ok]="p2p?.dhtRunning">{{p2p ? (p2p.dhtRunning ? '运行中' : '未运行') : '—'}}</b></div><div><span>索引同步</span><b [class.ok]="sync?.running">{{sync ? (sync.running ? '进行中' : '空闲') : '—'}}</b></div></div>
+    <div class="status-grid"><div><span>HTTP API</span><b [class.ok]="ready">{{ready === undefined ? '—' : ready ? '就绪' : '不可用'}}</b></div><div><span>共享网络</span><b [class.ok]="features?.networkState === 'running'">{{features?.networkState === 'running' ? '运行中' : features?.networkState === 'starting' ? '启动中' : features?.networkState === 'stopping' ? '停止中' : features?.networkState === 'failed' ? '启动失败' : features?.networkState === 'stopped' ? '已停止' : '—'}}</b></div><div><span>Rats P2P</span><b [class.ok]="p2p?.running">{{p2p ? (p2p.running ? '运行中' : '未运行') : '—'}}</b></div><div><span>DHT Socket</span><b [class.ok]="p2p?.dhtRunning">{{p2p ? (p2p.dhtRunning ? '运行中' : '未运行') : '—'}}</b></div><div><span>DHT Crawler</span><b [class.ok]="features?.crawlerState === 'running'">{{features?.crawlerState === 'running' ? '采集中' : features?.crawlerState === 'starting' ? '启动中' : features?.crawlerState === 'stopping' ? '停止中' : features?.crawlerState === 'failed' ? '启动失败' : features?.crawlerState === 'stopped' ? '已停止' : '—'}}</b></div><div><span>索引同步</span><b [class.ok]="sync?.running">{{sync ? (sync.running ? '进行中' : '空闲') : '—'}}</b></div></div>
   </section>
   <section class="panel event-panel"><div class="panel-title"><h2>实时事件</h2><a routerLink="/console/events">OPEN EVENT STREAM →</a></div><p class="empty" *ngIf="!events.length">本次会话暂无事件</p><div class="event-row" *ngFor="let item of events.slice(0,5)"><time>{{item.time}}</time><b>{{item.event}}</b><span>{{item.detail}}</span></div></section>
 </div>

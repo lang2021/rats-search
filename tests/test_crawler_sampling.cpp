@@ -95,6 +95,7 @@ private slots:
             return result;
         }(), 1);
         QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
+        QCOMPARE(crawler.queuedFetches(), 1);
         crawler.onGetPeers(parsed->info_hash(), 1);
         QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
         crawler.onAnnounce(parsed->info_hash(), "127.0.0.2", 6881, 1);
@@ -162,6 +163,7 @@ private slots:
         QTRY_COMPARE(repo.inspectFiles(freshKey, 1).state, data::TorrentRepository::FileLookup::State::Present);
         QCOMPARE(crawler.discoveredCount(), 2);
         crawler.stop();
+        QCOMPARE(crawler.queuedFetches(), 0);
         searchd.stop();
     }
 

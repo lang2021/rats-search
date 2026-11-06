@@ -6,6 +6,12 @@ import { ratsApiBaseUrl } from "../../environments/environment";
 
 type Stats = { torrents: number; files: number; size: number | null; peers: number };
 type P2p = { peerCount: number; dhtNodes: number; dhtRunning: boolean; running: boolean };
+type FeatureStatus = { networkState: string; crawlerState: string };
+type CrawlerStats = {
+  sampleRequests: number; sampleResponses: number; sampleHashes: number;
+  hashesEnqueued: number; activeFetches: number; queuedFetches: number;
+  fetchSuccesses: number; fetchErrors: number; indexedOrBackfilled: number;
+};
 type Sync = { operation?: string; running?: boolean; sharing?: boolean; processed?: number; total?: number; snapshot?: { valid?: boolean; torrents?: number }; serve?: { sending?: number; waiting?: number } };
 type Peer = { peerId?: string; address?: string; host?: string };
 type EventRow = { time: string; event: string; detail: string };
@@ -19,6 +25,7 @@ type EventRow = { time: string; event: string; detail: string };
 })
 export class DashboardHomeComponent implements OnInit, OnDestroy {
   stats?: Stats; p2p?: P2p; sync?: Sync; peers: Peer[] = []; downloads: unknown[] = [];
+  features?: FeatureStatus; crawler?: CrawlerStats;
   ready?: boolean; error = ""; events: EventRow[] = [];
   private timer?: ReturnType<typeof setInterval>;
   private ws?: WebSocket;
@@ -34,6 +41,7 @@ export class DashboardHomeComponent implements OnInit, OnDestroy {
       ratsCall<Stats>("stats.get"), ratsCall<P2p>("stats.p2pStatus"),
       ratsCall<Sync>("database.status"), ratsCall<Peer[]>("peers.list"),
       ratsCall<unknown[]>("download.list"), ratsReady(),
+      ratsCall<FeatureStatus>("features.status"), ratsCall<CrawlerStats>("stats.crawler"),
     ]);
     if (results[0].status === "fulfilled") this.stats = results[0].value;
     if (results[1].status === "fulfilled") this.p2p = results[1].value;
@@ -41,6 +49,8 @@ export class DashboardHomeComponent implements OnInit, OnDestroy {
     if (results[3].status === "fulfilled") this.peers = results[3].value;
     if (results[4].status === "fulfilled") this.downloads = results[4].value;
     if (results[5].status === "fulfilled") this.ready = results[5].value;
+    this.features = results[6].status === "fulfilled" ? results[6].value : undefined;
+    this.crawler = results[7].status === "fulfilled" ? results[7].value : undefined;
     this.error = results.some(r => r.status === "rejected") ? "部分指标暂不可用，请检查 API 连接。" : "";
   }
   private connectEvents(): void {

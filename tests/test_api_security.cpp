@@ -25,6 +25,7 @@ private slots:
     void cleanupTestCase();
     void testHttpRequiresToken();
     void testTokenFileIsPrivateAndPersistent();
+    void testCrawlerStatsRequireTokenAndReadStoppedState();
     void testAuthenticatedManagementRead();
     void testConfigSetReportsPersistenceFailure();
     void testFilePathsRequireExplicitRoot();
@@ -164,6 +165,57 @@ void TestApiSecurity::testTokenFileIsPrivateAndPersistent()
     QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 403);
     reply->deleteLater();
     second.stop();
+}
+
+void TestApiSecurity::testCrawlerStatsRequireTokenAndReadStoppedState()
+{
+    QTemporaryDir data;
+    QVERIFY(data.isValid());
+    rats::app::Application::Options options;
+    options.dataDirectory = data.path();
+    options.headless = true;
+    rats::app::Application app(options);
+    rats::rest::ApiRouter router(&app);
+    rats::rest::ApiServer api(&router);
+    api.setApplication(&app);
+    QTcpServer probe;
+    QVERIFY(probe.listen(QHostAddress::LocalHost, 0));
+    const int port = probe.serverPort();
+    probe.close();
+    QVERIFY(api.start(port, 0));
+
+    QNetworkAccessManager manager;
+    const QUrl url(QStringLiteral("http://127.0.0.1:%1/api/stats.crawler").arg(api.httpPort()));
+    auto post = [&](bool authorized) {
+        QNetworkRequest request(url);
+        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        if (authorized) request.setRawHeader("Authorization", "Bearer " + api.authenticationToken());
+        QNetworkReply* reply = manager.post(request, "{}");
+        QSignalSpy done(reply, &QNetworkReply::finished);
+        if (!reply->isFinished() && !done.wait(5000)) {
+            reply->abort();
+            reply->deleteLater();
+            return qMakePair(0, QJsonObject {});
+        }
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QJsonObject body = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        return qMakePair(status, body);
+    };
+
+    QCOMPARE(post(false).first, 401);
+    const auto response = post(true);
+    QCOMPARE(response.first, 200);
+    QVERIFY(response.second["success"].toBool());
+    const QJsonObject counters = response.second["data"].toObject();
+    const QStringList fields = { "sampleRequests", "sampleResponses", "sampleHashes", "hashesEnqueued",
+        "activeFetches", "queuedFetches", "fetchSuccesses", "fetchErrors", "indexedOrBackfilled" };
+    for (const QString& field : fields) {
+        QVERIFY2(counters.contains(field), qPrintable(field));
+        QCOMPARE(counters[field].toInt(-1), 0);
+    }
+    QVERIFY(!app.featureStatus()["crawlerRunning"].toBool());
+    api.stop();
 }
 
 void TestApiSecurity::testAuthenticatedManagementRead()
