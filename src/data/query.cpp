@@ -163,6 +163,13 @@ SelectQuery& SelectQuery::orderBy(const QString& column, bool descending)
     return *this;
 }
 
+SelectQuery& SelectQuery::thenBy(const QString& column, bool descending)
+{
+    if (!orderClause_.isEmpty() && sql::isIdentifier(column))
+        orderClause_ += QStringLiteral(", %1 %2").arg(column, descending ? QLatin1String("DESC") : QLatin1String("ASC"));
+    return *this;
+}
+
 SelectQuery& SelectQuery::limit(int offset, int count)
 {
     limitClause_ = QStringLiteral(" LIMIT %1,%2").arg(offset).arg(count);

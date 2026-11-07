@@ -530,6 +530,21 @@ QVector<Torrent> TorrentRepository::recent(int limit)
                               .arg(limit));
 }
 
+QVector<Torrent> TorrentRepository::browse(const SearchQuery& q)
+{
+    SelectQuery builder(kTorrents);
+    builder.columns(kListColumns);
+    if (q.safeSearch)
+        builder.whereRaw(QStringLiteral("contentCategory != %1").arg(domain::toId(ContentCategory::XXX)));
+    builder.whereRaw(contentTypeFilter(q.contentType));
+    const QString sortColumn = resolveSortColumn(q.sort);
+    builder.orderBy(sortColumn.isEmpty() ? QStringLiteral("added") : sortColumn,
+        sortColumn.isEmpty() ? true : q.descending);
+    builder.thenBy(QStringLiteral("id"), true);
+    builder.limit(q.offset, q.limit);
+    return selectTorrents(builder.build());
+}
+
 QVector<Torrent> TorrentRepository::top(const QString& type, const QString& time, int offset, int limit)
 {
     SelectQuery builder(kTorrents);

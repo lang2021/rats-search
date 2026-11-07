@@ -46,6 +46,11 @@ QVector<domain::SearchHit> SearchService::searchFiles(const Request& request)
     return repository_->searchFiles(toRepositoryQuery(request));
 }
 
+QVector<domain::Torrent> SearchService::browse(const Request& request)
+{
+    return repository_->browse(toRepositoryQuery(request));
+}
+
 QVector<domain::Torrent> SearchService::recent(int limit)
 {
     return repository_->recent(limit);

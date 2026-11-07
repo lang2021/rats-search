@@ -38,6 +38,7 @@ public:
 
     QVector<domain::SearchHit> searchTorrents(const Request& request);
     QVector<domain::SearchHit> searchFiles(const Request& request);
+    QVector<domain::Torrent> browse(const Request& request);
 
     QVector<domain::Torrent> recent(int limit = 10);
     QVector<domain::Torrent> top(const QString& type, const QString& time, int offset, int limit);

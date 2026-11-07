@@ -65,6 +65,7 @@ public:
     SelectQuery& whereInIds(const QString& column, const QVector<qint64>& values);
     SelectQuery& whereRaw(const QString& condition); // trusted numeric fragment
     SelectQuery& orderBy(const QString& column, bool descending);
+    SelectQuery& thenBy(const QString& column, bool descending);
     SelectQuery& limit(int offset, int count);
 
     QString build() const;

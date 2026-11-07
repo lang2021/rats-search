@@ -129,6 +129,7 @@ public:
     // Search -------------------------------------------------------------------
     QVector<domain::SearchHit> searchTorrents(const SearchQuery& query);
     QVector<domain::SearchHit> searchFiles(const SearchQuery& query);
+    QVector<domain::Torrent> browse(const SearchQuery& query);
     QVector<domain::Torrent> recent(int limit = 10);
     QVector<domain::Torrent> top(const QString& type, const QString& time, int offset, int limit);
     QVector<domain::Torrent> random(int limit = 5, bool includeFiles = false);

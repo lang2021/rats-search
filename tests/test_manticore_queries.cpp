@@ -16,6 +16,8 @@
 #include <QThread>
 #include <QtTest/QtTest>
 
+#include <algorithm>
+
 #include "data/database.h"
 #include "data/manticore.h"
 #include "data/query.h"
@@ -55,6 +57,7 @@ private slots:
     void testUpdateTrackerCounts();
     void testStatistics();
     void testRecent();
+    void testBrowseAllLocalRecordsWithPages();
     void testTop();
     void testRemove();
     void testSelectQueryAgainstLiveIndex();
@@ -432,6 +435,37 @@ void TestManticoreQueries::testRecent()
 {
     const auto recent = repo_->recent(10);
     QVERIFY(!recent.isEmpty());
+}
+
+void TestManticoreQueries::testBrowseAllLocalRecordsWithPages()
+{
+    Torrent withoutPeers = makeTorrent(880020, "Browse without seeders", ContentType::Video, 1024, 0);
+    QVERIFY(repo_->add(withoutPeers));
+    QVERIFY(waitForTorrent(withoutPeers.hash));
+    for (int id = 880021; id <= 880023; ++id) {
+        const Torrent record = makeTorrent(id, QStringLiteral("Browse page %1").arg(id));
+        QVERIFY(repo_->add(record));
+        QVERIFY(waitForTorrent(record.hash));
+    }
+
+    TorrentRepository::SearchQuery query;
+    query.limit = 100;
+    const auto all = repo_->browse(query);
+    QVERIFY(std::any_of(all.cbegin(), all.cend(), [&](const Torrent& torrent) {
+        return torrent.hash == withoutPeers.hash;
+    }));
+
+    query.limit = 2;
+    const auto first = repo_->browse(query);
+    query.offset = 2;
+    const auto second = repo_->browse(query);
+    QCOMPARE(first.size(), 2);
+    QCOMPARE(second.size(), 2);
+    QSet<QString> firstHashes;
+    for (const Torrent& torrent : first)
+        firstHashes.insert(torrent.hash);
+    for (const Torrent& torrent : second)
+        QVERIFY(!firstHashes.contains(torrent.hash));
 }
 
 void TestManticoreQueries::testTop()

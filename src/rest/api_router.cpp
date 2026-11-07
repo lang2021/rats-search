@@ -26,6 +26,8 @@
 #include "services/update_service.h"
 #include "services/voting_service.h"
 
+#include <algorithm>
+
 // The DHT metadata fallback reaches straight into the librats BitTorrent
 // subsystem, whose headers expose an EventBus emit() that collides with Qt's
 // `emit` keyword macro. Neutralise the macros across the librats includes, then
@@ -613,6 +615,17 @@ void ApiRouter::registerMethods()
         QJsonArray results;
         for (const domain::SearchHit& hit : hits)
             results.append(domain::codec::toJson(hit, { /*includeFiles*/ true }));
+        respond(Result::success(results));
+    });
+
+    add("search.browse", [this](const QJsonObject& params, const ResultCallback& respond) {
+        service::SearchService::Request req = buildSearchRequest(params);
+        req.query.clear();
+        req.offset = std::max(0, req.offset);
+        req.limit = std::clamp(req.limit, 1, 51);
+        QJsonArray results;
+        for (const domain::Torrent& torrent : app_->search()->browse(req))
+            results.append(domain::codec::toJson(torrent));
         respond(Result::success(results));
     });
 
