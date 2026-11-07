@@ -103,6 +103,7 @@ private slots:
         crawler.onAnnounce(parsed->info_hash(), "127.0.0.2", 6881, 1);
         QCOMPARE(crawler.metadataQueue_.size(), size_t(1));
         QCOMPARE(crawler.metadataQueue_.front().peerIp, QStringLiteral("127.0.0.2"));
+        QCOMPARE(crawler.metadataQueue_.front().source, Crawler::DiscoverySource::Sample);
         crawler.metadataQueue_.pop(); // simulate BEP 9 dispatch; same task/limits
 
         // Feed the parsed, hash-verified info dict through the normal success
@@ -189,7 +190,7 @@ private slots:
         QCOMPARE(started.size(), 0);
         QVERIFY(crawler.metadataQueue_.front().peerIp.isEmpty());
         QCOMPARE(crawler.metadataQueue_.front().peerPort, uint16_t(0));
-        QVERIFY(crawler.metadataQueue_.front().fromGetPeers);
+        QCOMPARE(crawler.metadataQueue_.front().source, Crawler::DiscoverySource::GetPeers);
         crawler.setKnownHashFilter([](const QString& key) {
             return key.startsWith("0009") ? Crawler::MetadataDecision::Skip : Crawler::MetadataDecision::Fetch;
         });

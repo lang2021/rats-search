@@ -126,7 +126,6 @@ bool Crawler::start()
                     [crawler, infoHash, ip, port, generation]() { crawler->onAnnounce(infoHash, ip, port, generation); },
                     Qt::QueuedConnection);
         });
-
         bt->set_spider_get_peers_callback([gate, generation](const librats::InfoHash& info_hash) {
             std::array<uint8_t, 20> infoHash = info_hash;
             std::lock_guard<std::mutex> lock(gate->mutex);
@@ -439,7 +438,7 @@ void Crawler::acceptInfoHash(const std::array<uint8_t, 20>& infoHash, const QStr
         request.infoHash = hashHex;
         request.peerIp = peerIp;
         request.peerPort = peerPort;
-        request.fromGetPeers = source == DiscoverySource::GetPeers;
+        request.source = source;
         metadataQueue_.push(request);
     }
     retryAfter_.remove(hashHex);
@@ -503,15 +502,20 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
         }, Qt::QueuedConnection);
     };
 
+    const auto origin = request.source == DiscoverySource::GetPeers
+        ? librats::Bittorrent::MetadataOrigin::GetPeers
+        : request.source == DiscoverySource::Announce
+            ? librats::Bittorrent::MetadataOrigin::Announce
+            : librats::Bittorrent::MetadataOrigin::Sample;
     uint64_t taskId = 0;
     if (!peerIp.isEmpty() && peerPort > 0) {
         // Fast path: fetch directly from the announcing peer (no DHT search).
         qDebug() << "Fetching metadata for" << infoHash.left(8) << "directly from" << peerIp << ":" << peerPort;
-        taskId = bt->get_torrent_metadata_from_peer(infoHash.toStdString(), peerIp.toStdString(), peerPort, onResult);
+        taskId = bt->get_torrent_metadata_from_peer(infoHash.toStdString(), peerIp.toStdString(), peerPort, onResult, librats::Bittorrent::kMetadataTimeoutMs, origin);
     } else {
         // Slow path: let librats find peers via the DHT.
         qDebug() << "Fetching metadata for" << infoHash.left(8) << "via DHT search";
-        taskId = bt->get_torrent_metadata(infoHash.toStdString(), onResult);
+        taskId = bt->get_torrent_metadata(infoHash.toStdString(), onResult, librats::Bittorrent::kMetadataTimeoutMs, origin);
     }
     if (taskId) {
         activeMetadataTaskIds_.insert(infoHash, taskId);
@@ -528,12 +532,23 @@ void Crawler::onMetadataReceived(const rats::domain::Torrent& torrent, const QSt
 {
     if (!running_ || generation != generation_)
         return;
-    activeMetadataTaskIds_.remove(infoHash);
+    const uint64_t taskId = activeMetadataTaskIds_.take(infoHash);
     pendingHashes_.erase(infoHash);
     rememberCooldown(infoHash, true); // also covers an index filter rejecting the result
     fetchSuccessCount_++;
     emit metadataEnded(infoHash, QStringLiteral("received"));
     emit discovered(torrent);
+    emit discoveredWithTask(torrent, taskId);
+}
+
+void Crawler::recordMetadataIndexResult(uint64_t taskId, const char* result)
+{
+#ifdef RATS_SEARCH_FEATURES
+    if (auto* bt = bittorrent()) bt->record_metadata_index_result(taskId, result);
+#else
+    Q_UNUSED(taskId);
+    Q_UNUSED(result);
+#endif
 }
 
 void Crawler::onMetadataFailed(const QString& infoHash, bool hadPeer, const QString& error,

@@ -231,9 +231,13 @@ void Application::applyConfig()
 void Application::wireSignals()
 {
     // Newly crawled torrents flow into the single insertion path.
-    connect(d_->crawler.get(), &net::Crawler::discovered, d_->indexing.get(),
-        [this](const domain::Torrent& t) {
+    connect(d_->crawler.get(), &net::Crawler::discoveredWithTask, d_->indexing.get(),
+        [this](const domain::Torrent& t, uint64_t taskId) {
             const auto result = d_->indexing->insert(t);
+            d_->crawler->recordMetadataIndexResult(taskId,
+                result.success ? (result.filesBackfilled ? "backfilled" :
+                    result.alreadyExists ? "already_present" : "inserted") :
+                    result.partialWrite ? "partial_write_failed" : "failed");
             if (result.success && (!result.alreadyExists || result.filesBackfilled))
                 d_->crawler->recordIndexed();
             if (result.filesBackfilled)

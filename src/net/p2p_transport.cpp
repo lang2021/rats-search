@@ -608,6 +608,7 @@ bool P2PTransport::start()
         {
             librats::Bittorrent::Config btCfg;
             btCfg.client.download_path = d_->dataDirectory.toStdString();
+            btCfg.metadata_history_dir = d_->dataDirectory.toStdString();
             btCfg.client.listen_port = static_cast<uint16_t>(d_->dhtPort);
             btCfg.use_node_dht = true;
             d_->bittorrent = d_->node->add_subsystem(std::make_unique<librats::Bittorrent>(std::move(btCfg)));

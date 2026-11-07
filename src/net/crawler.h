@@ -80,6 +80,7 @@ public:
     enum class MetadataDecision { Fetch, Skip, Error };
     using KnownHashFilter = std::function<MetadataDecision(const QString& infoHash)>;
     void setKnownHashFilter(KnownHashFilter filter);
+    void recordMetadataIndexResult(uint64_t taskId, const char* result);
 
     enum class DiscoverySource { Sample, GetPeers, Announce };
     Q_ENUM(DiscoverySource)
@@ -91,6 +92,7 @@ signals:
     void statusChanged(const QString& status);
     // Emitted once metadata has been fetched and a full torrent model built.
     void discovered(const rats::domain::Torrent& torrent);
+    void discoveredWithTask(const rats::domain::Torrent& torrent, uint64_t taskId);
 
 private slots:
     void onSpiderWalk();
@@ -106,7 +108,7 @@ private:
         QString infoHash;
         QString peerIp;
         uint16_t peerPort = 0;
-        bool fromGetPeers = false;
+        DiscoverySource source = DiscoverySource::Sample;
     };
 
     // Borrowed BitTorrent subsystem (null if the transport has none).
