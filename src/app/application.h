@@ -95,6 +95,7 @@ public:
     QJsonObject featureStatus() const;
 
     const Options& options() const;
+    qint64 databaseIndexSizeBytes() const;
 
     // Service accessors (non-owning). Valid after construction; live subsystems
     // (database, transport) only after start().

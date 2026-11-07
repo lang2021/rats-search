@@ -1183,6 +1183,7 @@ void ApiRouter::registerMethods()
         result["torrents"] = stats.torrents;
         result["files"] = stats.files;
         result["size"] = stats.totalSize;
+        result["databaseSizeBytes"] = app_->databaseIndexSizeBytes();
         result["peers"] = app_->transport() ? app_->transport()->peerCount() : 0;
         respond(Result::success(result));
     });

@@ -530,6 +530,11 @@ const Application::Options& Application::options() const
     return d_->options;
 }
 
+qint64 Application::databaseIndexSizeBytes() const
+{
+    return d_->manticore ? d_->manticore->databaseSizeBytes() : -1;
+}
+
 ConfigStore* Application::config() const
 {
     return d_->config.get();

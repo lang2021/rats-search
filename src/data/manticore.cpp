@@ -436,6 +436,11 @@ bool Manticore::isRunning() const
     return status_ == Status::Running;
 }
 
+qint64 Manticore::databaseSizeBytes() const
+{
+    return computeDatabaseSizeBytes();
+}
+
 QSqlDatabase Manticore::getDatabase() const
 {
     // Each thread needs its own connection - include the thread ID in the

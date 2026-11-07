@@ -44,6 +44,7 @@ public:
      * @brief Check if Manticore is running
      */
     bool isRunning() const;
+    qint64 databaseSizeBytes() const;
 
     /**
      * @brief Get the port searchd actually listens on (chosen at start()).
