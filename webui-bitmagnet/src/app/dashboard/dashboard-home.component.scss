@@ -1,7 +1,5 @@
 .overview { display: grid; gap: 18px; color: var(--rs-text); }
-.overview-intro { display: flex; align-items: start; justify-content: space-between; padding: 0 0 6px; }
-.overview-intro h1 { margin: 0; font-size: 22px; font-weight: 500; }
-.overview-intro p { margin: 5px 0 0; color: var(--rs-subtle); font-size: 10px; letter-spacing: .28em; }
+.overview-intro { display: flex; justify-content: flex-end; padding: 0 0 6px; }
 .overview-intro button { border-radius: 0; border-color: var(--rs-accent); color: var(--rs-accent); font-size: 10px; letter-spacing: .2em; }
 .metric-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
 .metric-grid article { border: 1px solid var(--rs-border); background: var(--rs-surface); padding: 16px 18px; min-height: 94px; display: flex; flex-direction: column; }

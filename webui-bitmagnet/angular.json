@@ -29,7 +29,7 @@
                 "input": "public"
               },
               {
-                "glob": "rat-logo.png",
+                "glob": "rat-avatar.png",
                 "input": "../resources",
                 "output": "assets"
               }
@@ -96,7 +96,7 @@
                 "input": "public"
               },
               {
-                "glob": "rat-logo.png",
+                "glob": "rat-avatar.png",
                 "input": "../resources",
                 "output": "assets"
               }

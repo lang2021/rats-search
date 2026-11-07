@@ -1,6 +1,6 @@
 <app-document-title [parts]="['系统总览']" />
 <div class="overview">
-  <div class="overview-intro"><div><h1>系统总览</h1><p>RATS SEARCH · DHT / P2P · LIVE METRICS</p></div><button mat-stroked-button (click)="refresh()">刷新数据</button></div>
+  <div class="overview-intro"><button mat-stroked-button (click)="refresh()">刷新数据</button></div>
   <p class="api-error" *ngIf="error" role="alert">{{error}}</p>
   <section class="metric-grid" aria-label="关键指标">
     <article><span>INDEXED TORRENTS</span><strong>{{stats?.torrents ?? '—'}}</strong><small>本地索引资源</small></article>

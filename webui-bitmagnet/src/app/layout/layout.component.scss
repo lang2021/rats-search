@@ -2,7 +2,7 @@
 .station-shell { display: flex; min-height: 100vh; background: var(--rs-bg); color: var(--rs-text); }
 .station-sidebar { width: 220px; flex: 0 0 220px; background: var(--rs-sidebar); border-right: 1px solid var(--rs-border); display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; z-index: 30; box-sizing: border-box; padding: 20px 14px; }
 .station-brand { height: 58px; display: flex; align-items: flex-start; gap: 8px; color: var(--rs-text); text-decoration: none; }
-.station-brand img { width: 38px; height: 36px; object-fit: cover; object-position: left; filter: var(--rs-logo-filter); }
+.station-brand img { width: 42px; height: 38px; object-fit: contain; object-position: center; filter: var(--rs-logo-filter); }
 .station-brand strong { font-size: 14px; letter-spacing: .09em; white-space: nowrap; }
 .station-brand small { display: block; margin-top: 5px; font-size: 8px; letter-spacing: .33em; color: var(--rs-subtle); white-space: nowrap; }
 .nav-caption { color: var(--rs-subtle); font-size: 10px; letter-spacing: .3em; padding: 10px 14px 4px; margin: 8px 0; }
