@@ -1,7 +1,7 @@
 import { Injectable, OnDestroy, signal } from "@angular/core";
 import { Subject } from "rxjs";
 import { ratsApiBaseUrl } from "../../environments/environment";
-import { ratsAuthToken, ratsCall } from "./rats-api";
+import { clearRatsAuthToken, ratsAuthToken, ratsCall } from "./rats-api";
 
 @Injectable({ providedIn: "root" })
 export class WatchUpdates implements OnDestroy {
@@ -40,9 +40,15 @@ export class WatchUpdates implements OnDestroy {
     socket.onopen = () => socket.send(JSON.stringify({ method: "auth", params: { token } }));
     socket.onmessage = ({data}) => {
       const frame = JSON.parse(data);
+      if (frame.data?.authenticated === false || frame.success === false && String(frame.error ?? "").toLowerCase().includes("auth")) {
+        clearRatsAuthToken();
+        socket.close();
+        return;
+      }
       if (frame.data?.authenticated || frame.event === "watchChanged") this.refresh();
     };
-    socket.onclose = () => {
+    socket.onclose = event => {
+      if (event.code === 1008) clearRatsAuthToken();
       ++this.revision;
       this.socket = undefined;
       this.unread.set(null);

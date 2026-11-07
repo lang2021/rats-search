@@ -26,7 +26,7 @@ import * as generated from "../graphql/generated";
 import { intParam, stringListParam, stringParam } from "../util/query-string";
 import { AppModule } from "../app.module";
 import { DocumentTitleComponent } from "../layout/document-title.component";
-import { ratsCall, ratsSafeSearch, RatsTorrent, requestRatsToken } from "../rats/rats-api";
+import { clearRatsAuthToken, ratsCall, ratsSafeSearch, RatsTorrent, requestRatsToken } from "../rats/rats-api";
 import { ratsApiBaseUrl } from "../../environments/environment";
 import { takeQueuedLocalSearch } from "../rats/search-navigation";
 import { IntEstimatePipe } from "../pipes/int-estimate.pipe";
@@ -366,7 +366,10 @@ export class TorrentsSearchComponent implements OnInit, OnDestroy {
             this.mergeRemoteHits(frame.data?.torrents ?? [], true);
         };
         ws.onerror = finish;
-        ws.onclose = finish;
+        ws.onclose = event => {
+          if (event.code === 1008) clearRatsAuthToken();
+          finish();
+        };
         signal.addEventListener("abort", () => { ws.close(); finish(); }, { once: true });
       });
     } catch { /* The final HTTP response remains available without a live stream. */ }

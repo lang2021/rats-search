@@ -1,7 +1,7 @@
 import { Component, OnDestroy, OnInit } from "@angular/core";
 import { AppModule } from "../app.module";
 import { DocumentTitleComponent } from "../layout/document-title.component";
-import { requestRatsToken, ratsCall, ratsReady, summarizeRatsEvent } from "../rats/rats-api";
+import { clearRatsAuthToken, requestRatsToken, ratsCall, ratsReady, summarizeRatsEvent } from "../rats/rats-api";
 import { ratsApiBaseUrl } from "../../environments/environment";
 
 type Stats = { torrents: number; files: number; size: number | null; peers: number };
@@ -61,10 +61,23 @@ export class DashboardHomeComponent implements OnInit, OnDestroy {
       this.ws.onopen = async () => this.ws?.send(JSON.stringify({ method: "auth", params: { token: await requestRatsToken() } }));
       this.ws.onmessage = message => {
         try {
-          const parsed = summarizeRatsEvent(JSON.parse(String(message.data)));
+          const frame = JSON.parse(String(message.data));
+          if (frame.data?.authenticated === false || frame.success === false && String(frame.error ?? "").toLowerCase().includes("auth")) {
+            clearRatsAuthToken();
+            this.error = "WebSocket 认证失败，令牌已清除；访问 API 时重新连接";
+            this.ws?.close();
+            return;
+          }
+          const parsed = summarizeRatsEvent(frame);
           if (!parsed) return;
           this.events = [{ time: new Date().toLocaleTimeString(), event: parsed.name, detail: parsed.detail }, ...this.events].slice(0, 20);
         } catch { /* Ignore malformed event frames. */ }
+      };
+      this.ws.onclose = event => {
+        if (event.code === 1008) {
+          clearRatsAuthToken();
+          this.error = "WebSocket 认证失败，令牌已清除；访问 API 时重新连接";
+        }
       };
     } catch { /* Read-only dashboard remains usable without WebSocket. */ }
   }

@@ -2,7 +2,7 @@ import { Component, ElementRef, OnDestroy, OnInit, ViewChild } from "@angular/co
 import { FormsModule } from "@angular/forms";
 import { AppModule } from "../app.module";
 import { DocumentTitleComponent } from "../layout/document-title.component";
-import { ratsAuthToken, ratsCall } from "./rats-api";
+import { clearRatsAuthToken, ratsAuthToken, ratsCall } from "./rats-api";
 
 type Config = {
   networkEnabled: boolean;
@@ -240,6 +240,7 @@ type P2pStats = { dhtNodes: number; peerCount: number };
 
         <p *ngIf="message" role="status" [class.attention]="messageIsError">{{ message }}</p>
         <button mat-stroked-button (click)="requestResetDefaults()" [disabled]="controlsDisabled">恢复默认配置</button>
+        <button mat-button type="button" (click)="forgetApiToken()">忘记 API 令牌</button>
         <dialog *ngIf="pending as change" #confirmDialog class="confirm" aria-label="确认更改设置" (cancel)="cancelChange()">
           <span>{{ change.prompt }}</span>
           <button mat-flat-button color="primary" autofocus (click)="confirmChange()">确认更改</button>
@@ -567,6 +568,11 @@ export class SettingsComponent implements OnInit, OnDestroy {
       this.message = String(error);
       this.messageIsError = true;
     }
+  }
+
+  forgetApiToken(): void {
+    clearRatsAuthToken();
+    location.reload();
   }
 
   private async refreshState(): Promise<void> {

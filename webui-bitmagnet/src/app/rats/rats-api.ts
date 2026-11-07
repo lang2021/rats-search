@@ -24,7 +24,22 @@ const tokenKey = "rats-api-token";
 let tokenRequest: Promise<string> | undefined;
 
 export function ratsAuthToken(): string {
-  return sessionStorage.getItem(tokenKey) ?? "";
+  const persistent = localStorage.getItem(tokenKey);
+  if (persistent) {
+    sessionStorage.removeItem(tokenKey);
+    return persistent;
+  }
+  const legacy = sessionStorage.getItem(tokenKey) ?? "";
+  if (legacy) {
+    localStorage.setItem(tokenKey, legacy);
+    sessionStorage.removeItem(tokenKey);
+  }
+  return legacy;
+}
+
+export function clearRatsAuthToken(): void {
+  localStorage.removeItem(tokenKey);
+  sessionStorage.removeItem(tokenKey);
 }
 
 export function requestRatsToken(): Promise<string> {
@@ -56,7 +71,7 @@ export function requestRatsToken(): Promise<string> {
     form.addEventListener("submit", () => { submitted = true; });
     dialog.addEventListener("close", () => {
       const token = submitted ? input.value.trim() : "";
-      if (token) sessionStorage.setItem(tokenKey, token);
+      if (token) localStorage.setItem(tokenKey, token);
       dialog.remove();
       tokenRequest = undefined;
       resolve(token);
@@ -96,11 +111,11 @@ export async function ratsCall<T>(
     body: JSON.stringify(params),
     signal,
   });
-  const envelope = (await response.json()) as RatsEnvelope<T>;
   if (response.status === 401) {
-    sessionStorage.removeItem(tokenKey);
-    throw new Error("API 令牌无效；刷新页面后重新输入。");
+    clearRatsAuthToken();
+    throw new Error("API 令牌无效；令牌已清除，请重新连接。");
   }
+  const envelope = (await response.json()) as RatsEnvelope<T>;
   if (!response.ok || !envelope.success) {
     throw new Error(envelope.error ?? `Rats Search API: ${response.status}`);
   }
@@ -114,6 +129,10 @@ export async function ratsSafeSearch(signal?: AbortSignal): Promise<boolean> {
 
 export async function ratsReady(signal?: AbortSignal): Promise<boolean> {
   const response = await fetch(`${ratsApiBaseUrl}/readyz`, { signal, headers: await authorizationHeaders() });
+  if (response.status === 401) {
+    clearRatsAuthToken();
+    throw new Error("API 令牌无效；令牌已清除，请重新连接。");
+  }
   return response.ok;
 }
 import { ratsApiBaseUrl } from "../../environments/environment";

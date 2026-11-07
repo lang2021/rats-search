@@ -1,7 +1,7 @@
 import { Component, OnDestroy, OnInit } from "@angular/core";
 import { AppModule } from "../app.module";
 import { ratsApiBaseUrl } from "../../environments/environment";
-import { ratsCall, requestRatsToken, summarizeRatsEvent } from "./rats-api";
+import { clearRatsAuthToken, ratsCall, requestRatsToken, summarizeRatsEvent } from "./rats-api";
 
 const categories = ["全部", "资源发现", "调查中", "入库", "调查失败", "资料补齐", "系统事件"] as const;
 type Category = typeof categories[number];
@@ -153,6 +153,11 @@ export class TrawlComponent implements OnInit, OnDestroy {
             void this.readState(socket);
             clearInterval(this.poll);
             this.poll = setInterval(() => void this.readState(socket), 15000);
+          } else if (frame.data?.authenticated === false || frame.success === false && String(frame.error ?? "").toLowerCase().includes("auth")) {
+            clearRatsAuthToken();
+            this.connection = "认证失败，令牌已清除；访问 API 时重新连接";
+            this.crawler = "状态未知";
+            socket.close();
           } else if (frame.event === "trawlState") {
             this.stateRevision++;
             this.crawler = ({Active:"采集中", Stopping:"停止中", Stopped:"已停止"} as Record<string,string>)[frame.data.status] ?? "状态未知";
@@ -167,8 +172,8 @@ export class TrawlComponent implements OnInit, OnDestroy {
         this.ws = undefined;
         if (this.destroyed) return;
         if (event.code === 1008) {
-          sessionStorage.removeItem("rats-api-token");
-          this.connection = "认证失败，请刷新并重新输入令牌"; this.crawler = "状态未知";
+          clearRatsAuthToken();
+          this.connection = "认证失败，令牌已清除；访问 API 时重新连接"; this.crawler = "状态未知";
         } else this.reconnect();
       };
     } catch { this.reconnect(); }
