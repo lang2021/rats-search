@@ -74,6 +74,9 @@ rats.log
 config.json
 peers.rats
 peers_ever.rats
+webui-react/.env.local
+__pycache__/
+*.pyc
 
 # Temporary files
 tmp/
