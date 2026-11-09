@@ -20,7 +20,12 @@ tmp/
 temp/
 *.tmp
 *.bak
+webui/
+webui-bitmagnet/
 legacy/
+webui-react/node_modules/
+webui-react/dist/
+webui-react/.env.local
 installer/
 .agents.md
 AGENTS.md

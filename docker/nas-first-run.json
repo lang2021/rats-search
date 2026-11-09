@@ -1,0 +1,12 @@
+{
+  "networkEnabled": true,
+  "indexer": true,
+  "independentDirect": false,
+  "btFileDownload": false,
+  "btFileUpload": false,
+  "downloadPath": "/data/downloads",
+  "indexExchange": false,
+  "databaseSharing": false,
+  "p2pReplication": false,
+  "p2pReplicationServer": false
+}

@@ -6,29 +6,47 @@
 FROM ubuntu:24.04 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG UBUNTU_APT_MIRROR
 
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    if [ -n "$UBUNTU_APT_MIRROR" ]; then \
+        sed -i "s|^URIs: .*|URIs: $UBUNTU_APT_MIRROR|" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi && \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=0 \
+        install -y --no-install-recommends \
     build-essential \
     cmake \
     ninja-build \
-    git \
     qt6-base-dev \
     qt6-websockets-dev \
     qt6-tools-dev \
+    libmaxminddb-dev \
     libgl1-mesa-dev \
-    libxkbcommon-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libxkbcommon-dev
 
 WORKDIR /src
 COPY . .
 
-# Build the project (console-only, no tests)
+# Build the existing application target for console runtime (no tests).
 RUN cmake -B build -G "Ninja" \
     -DCMAKE_BUILD_TYPE=Release \
     -DRATS_SEARCH_USE_SYSTEM_LIBRATS=OFF \
     -DRATS_SEARCH_BUILD_TESTS=OFF
 
 RUN cmake --build build --config Release --parallel
+
+FROM node:22-bookworm-slim AS webui
+ARG NPM_REGISTRY=https://registry.npmjs.org
+WORKDIR /src/webui-react
+COPY webui-react/package.json webui-react/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --registry="$NPM_REGISTRY" --audit=false --maxsockets=2 \
+        --fetch-retries=3 --fetch-timeout=30000
+COPY webui-react/ ./
+RUN npm run build
 
 # Select the Manticore binaries for the image's target architecture.
 FROM ubuntu:24.04 AS manticore
@@ -47,21 +65,30 @@ RUN case "$TARGETARCH" in \
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG UBUNTU_APT_MIRROR
 
 # Install only the runtime libraries needed
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ -n "$UBUNTU_APT_MIRROR" ]; then \
+        sed -i "s|^URIs: .*|URIs: $UBUNTU_APT_MIRROR|" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi && \
+    apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Pipeline-Depth=0 \
+        install -y --no-install-recommends \
     libqt6core6t64 \
     libqt6gui6t64 \
     libqt6widgets6t64 \
     libqt6network6t64 \
     libqt6sql6t64 \
     libqt6sql6-mysql \
+    libqt6sql6-sqlite \
     libqt6concurrent6t64 \
     libqt6websockets6 \
+    libmaxminddb0 \
     libgl1 \
     libxkbcommon0 \
     ca-certificates \
     curl \
+    util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 # Remove default ubuntu user (may conflict with host UID 1000)
@@ -78,8 +105,9 @@ COPY --from=builder /src/build/bin/RatsSearch /app/
 # Copy Manticore search engine binaries for the selected architecture.
 COPY --from=manticore /out/ /app/
 
-# Copy web UI files
-COPY webui/ /app/webui/
+# Copy the React production build.
+COPY --from=webui /src/webui-react/dist/ /app/webui/
+COPY docker/nas-first-run.json /app/nas-first-run.json
 
 RUN chmod +x /app/RatsSearch /app/searchd /app/indexer /app/indextool
 
@@ -101,4 +129,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # CMD runs inside entrypoint (switched to rats user there)
-CMD ["/app/RatsSearch", "--console", "--spider", "--max-peers", "30", "--data-dir", "/data", "--webui-dir", "/app/webui", "--api-bind", "0.0.0.0"]
+CMD ["/app/RatsSearch", "--console", "--max-peers", "30", "--data-dir", "/data", "--webui-dir", "/app/webui", "--api-bind", "0.0.0.0"]

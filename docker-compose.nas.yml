@@ -1,0 +1,29 @@
+services:
+  rats-search:
+    image: rats-search:nas-arm64
+    container_name: rats-search
+    platform: linux/arm64
+    init: true
+    ports:
+      - "8095:8095/tcp"
+      - "8096:8096/tcp"
+      - "4444:4444/tcp"
+      - "4444:4444/udp"
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - ./rats-data:/data
+    mem_limit: 2560m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8095/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    stop_grace_period: 120s
+    restart: unless-stopped
