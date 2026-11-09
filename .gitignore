@@ -46,6 +46,11 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 
+# Retained, untracked artifacts from the retired Angular frontend
+webui-bitmagnet/.angular/
+webui-bitmagnet/dist/
+webui-bitmagnet/node_modules/
+
 # IDE
 .vscode/
 .idea/

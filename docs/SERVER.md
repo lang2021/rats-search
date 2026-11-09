@@ -1,10 +1,10 @@
 # Server Configuration
 
-This document covers server configuration for both Qt 2.0 and the legacy Node.js version.
+This document covers the native Qt server configuration.
 
 ---
 
-## Rats Search 2.0 (Qt Version)
+## Rats Search (Qt)
 
 ### Built-in API Server
 
@@ -16,7 +16,7 @@ Rats Search 2.0 includes a built-in REST/WebSocket API server that can be enable
 
 ```json
 {
-    "restApiEnabled": true,
+    "restApi": true,
     "httpPort": 8095
 }
 ```
@@ -31,17 +31,18 @@ The configuration file `rats.json` is created in the data directory:
 | Linux | `~/.config/RatsSearch/rats.json` or `~/.local/share/RatsSearch/` |
 | macOS | `~/Library/Application Support/RatsSearch/rats.json` |
 
-### Qt 2.0 Configuration Options
+### Configuration Options
 
 ```json
 {
-    "p2pPort": 4445,
-    "dhtPort": 4446,
+    "p2pPort": 4444,
+    "dhtPort": 6881,
     "httpPort": 8095,
-    "restApiEnabled": true,
-    "indexerEnabled": true,
-    "trackersEnabled": true,
-    "darkMode": true,
+    "restApi": false,
+    "networkEnabled": false,
+    "indexer": true,
+    "trackers": true,
+    "darkMode": false,
     "trayOnMinimize": true,
     "trayOnClose": false,
     "confirmExit": true,
@@ -51,50 +52,17 @@ The configuration file `rats.json` is created in the data directory:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `p2pPort` | int | 4445 | P2P communication port |
-| `dhtPort` | int | 4446 | DHT operations port |
+| `p2pPort` | int | 4444 | P2P communication port |
+| `dhtPort` | int | 6881 | DHT operations port |
 | `httpPort` | int | 8095 | REST API server port |
-| `restApiEnabled` | bool | false | Enable REST API server |
-| `indexerEnabled` | bool | true | Enable DHT torrent indexer |
-| `trackersEnabled` | bool | true | Enable tracker peer checking |
-| `darkMode` | bool | true | Use dark theme |
+| `restApi` | bool | false | Enable REST API server |
+| `networkEnabled` | bool | false | Start the shared network at launch |
+| `indexer` | bool | true | Start the DHT crawler when the network is available |
+| `trackers` | bool | true | Enable tracker peer checking |
+| `darkMode` | bool | false | Use dark theme |
 | `uiFontFamily` | string | "" | Interface font family, tried before the theme's own font stack (empty = theme default) |
 | `uiFontScale` | int | 100 | Interface text size in percent of the default (clamped to 50–200) |
 | `trayOnMinimize` | bool | true | Hide to tray on minimize |
 | `trayOnClose` | bool | false | Hide to tray on close |
 | `confirmExit` | bool | true | Ask for confirmation before quitting the GUI |
 | `startMinimized` | bool | false | Start minimized to tray |
-
----
-
-## Legacy Version (Node.js)
-
-> The legacy Electron/Node.js version is located in the `legacy/` folder.
-
-### Data Directory Configuration
-
-File `package.json` contains path to data directory. You can move this folder to any location (by default, data directory for web server is the same as root folder with package.json):
-
-```json
-{
-    "serverDataDirectory": "./"
-}
-```
-
-This directory always contains logs and other configuration entities.
-
-### Legacy Configuration
-
-After server start, `rats.json` will be created in the root folder:
-
-```json
-{
-    "dbPath": "/path/to/db",
-    "httpPort": 8095
-} 
-```
-
-| Option | Description |
-|--------|-------------|
-| `httpPort` | Port which HTTP server listens on |
-| `dbPath` | Path to database folder with torrent collection |

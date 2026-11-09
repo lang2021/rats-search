@@ -21,7 +21,7 @@ The API is a thin transport in front of the unified **`ApiRouter`** method surfa
 
 ```json
 {
-    "restApiEnabled": true,
+    "restApi": true,
     "httpPort": 8095
 }
 ```
@@ -1067,10 +1067,3 @@ if data['success']:
     for torrent in data['data']:
         print(f"{torrent['name']} - {torrent['seeders']} seeders")
 ```
-
----
-
-## Legacy Version (Node.js)
-
-> The legacy Electron/Node.js version is located in the `legacy/` folder.
-> It uses a different API format (socket.io + polling queue). See the legacy README for details.
