@@ -46,6 +46,11 @@ QVector<domain::SearchHit> SearchService::searchFiles(const Request& request)
     return repository_->searchFiles(toRepositoryQuery(request));
 }
 
+std::optional<data::TorrentRepository::LocalSearchPage> SearchService::searchLocalPage(const Request& request, const QString& source)
+{
+    return repository_->searchLocalPage(toRepositoryQuery(request), source);
+}
+
 QVector<domain::Torrent> SearchService::browse(const Request& request)
 {
     return repository_->browse(toRepositoryQuery(request));

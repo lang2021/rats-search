@@ -53,6 +53,8 @@ private slots:
     void testGetWithFiles();
     void testFileLookupAndBackfill();
     void testSearchByName();
+    void testChineseSubstringSearch();
+    void testUnifiedLocalSearchSourcesAndCounts();
     void testSearchByHash();
     void testUpdateTrackerCounts();
     void testStatistics();
@@ -399,6 +401,137 @@ void TestManticoreQueries::testSearchByName()
             found = true;
     }
     QVERIFY2(found, "Full-text search should find the 'Debian' torrent");
+}
+
+void TestManticoreQueries::testChineseSubstringSearch()
+{
+    Torrent title = makeTorrent(3401, QStringLiteral("【AI高清2K修复】"));
+    QVERIFY(repo_->add(title));
+    QVERIFY(waitForTorrent(title.hash));
+
+    Torrent path = makeTorrent(3402, QStringLiteral("Unrelated title"));
+    path.fileList.append(File { QStringLiteral("videos/高清修复.mkv"), 1024 });
+    QVERIFY(repo_->add(path));
+    QVERIFY(waitForFiles(path.hash, 1));
+
+    TorrentRepository::SearchQuery q;
+    q.text = QStringLiteral("高清");
+    q.limit = 21;
+    const auto titles = repo_->searchTorrents(q);
+    const auto files = repo_->searchFiles(q);
+    QVERIFY2(std::any_of(titles.begin(), titles.end(), [&](const auto& hit) { return hit.torrent.hash == title.hash; }),
+        "A two-character Chinese substring in a title must be found");
+    QVERIFY2(std::any_of(files.begin(), files.end(), [&](const auto& hit) { return hit.torrent.hash == path.hash; }),
+        "A two-character Chinese substring in a file path must be found");
+
+    for (int n = 0; n < 21; ++n) {
+        Torrent extra = makeTorrent(3500 + n, QStringLiteral("Archive %1").arg(n));
+        extra.fileList.append(File { QStringLiteral("folder/高清-%1.mkv").arg(n), 1024 });
+        QVERIFY(repo_->add(extra));
+    }
+    q.limit = 21;
+    const auto firstPage = repo_->searchFiles(q);
+    QCOMPARE(firstPage.size(), 21);
+    q.offset = 20;
+    const auto secondPage = repo_->searchFiles(q);
+    QCOMPARE(secondPage.size(), 2);
+    QVERIFY(secondPage.first().torrent.hash != firstPage.first().torrent.hash);
+
+    q.text = title.hash;
+    q.offset = 0;
+    QCOMPARE(repo_->searchTorrents(q).first().torrent.hash, title.hash);
+
+    Torrent restricted = makeTorrent(3600, QStringLiteral("高清限制资源"));
+    restricted.contentCategory = ContentCategory::XXX;
+    QVERIFY(repo_->add(restricted));
+    q.text = QStringLiteral("高清");
+    q.safeSearch = true;
+    const auto safeHits = repo_->searchTorrents(q);
+    QVERIFY(std::none_of(safeHits.begin(), safeHits.end(), [&](const auto& hit) {
+        return hit.torrent.hash == restricted.hash;
+    }));
+}
+
+void TestManticoreQueries::testUnifiedLocalSearchSourcesAndCounts()
+{
+    const QString keyword = QStringLiteral("星际高清");
+    Torrent title = makeTorrent(3701, QStringLiteral("星际高清纪录片"), ContentType::Video, 100);
+    Torrent path = makeTorrent(3702, QStringLiteral("纪录片合集"), ContentType::Books, 200);
+    path.fileList.append(File { QStringLiteral("目录/星际高清影像.mkv"), 200 });
+    Torrent both = makeTorrent(3703, QStringLiteral("星际高清音乐"), ContentType::Audio, 300);
+    both.fileList.append(File { QStringLiteral("目录/星际高清音乐.flac"), 300 });
+    Torrent other = makeTorrent(3704, QStringLiteral("不匹配的游戏"), ContentType::Games, 400);
+    Torrent hidden = makeTorrent(3705, QStringLiteral("星际高清限制"), ContentType::Video, 500);
+    hidden.contentCategory = ContentCategory::XXX;
+    for (const auto& torrent : { title, path, both, other, hidden })
+        QVERIFY(repo_->add(torrent));
+    for (const auto& torrent : { title, path, both, other, hidden })
+        QVERIFY(waitForTorrent(torrent.hash));
+    QVERIFY(waitForFiles(path.hash, 1));
+    QVERIFY(waitForFiles(both.hash, 1));
+
+    TorrentRepository::SearchQuery q;
+    q.text = keyword;
+    q.safeSearch = true;
+    q.sort = QStringLiteral("size");
+    q.descending = false;
+    q.limit = 1;
+    const auto first = repo_->searchLocalPage(q, QStringLiteral("all"));
+    QVERIFY(first.has_value());
+    QCOMPARE(first->total, 3LL);
+    QCOMPARE(first->counts.value(QStringLiteral("total")), 3LL);
+    QCOMPARE(first->counts.value(QStringLiteral("video")), 1LL);
+    QCOMPARE(first->counts.value(QStringLiteral("books")), 1LL);
+    QCOMPARE(first->counts.value(QStringLiteral("audio")), 1LL);
+    QCOMPARE(first->items.first().torrent.hash, title.hash);
+    q.offset = 1;
+    const auto second = repo_->searchLocalPage(q, QStringLiteral("all"));
+    QVERIFY(second.has_value());
+    QCOMPARE(second->items.first().torrent.hash, path.hash);
+    QVERIFY(second->items.first().fromFileMatch);
+    QVERIFY(second->items.first().matchingPaths.first().contains(keyword));
+    QCOMPARE(second->counts.value(QStringLiteral("total")), 3LL);
+
+    q.offset = 0;
+    q.limit = 20;
+    const auto names = repo_->searchLocalPage(q, QStringLiteral("filename"));
+    QVERIFY(names.has_value());
+    QCOMPARE(names->total, 2LL);
+    QVERIFY(std::none_of(names->items.begin(), names->items.end(), [&](const auto& hit) {
+        return hit.torrent.hash == path.hash;
+    }));
+    const auto paths = repo_->searchLocalPage(q, QStringLiteral("content"));
+    QVERIFY(paths.has_value());
+    QCOMPARE(paths->total, 2LL);
+    QCOMPARE(paths->counts.value(QStringLiteral("video")), 0LL);
+    QCOMPARE(paths->counts.value(QStringLiteral("books")), 1LL);
+    QCOMPARE(paths->counts.value(QStringLiteral("audio")), 1LL);
+    QVERIFY(std::all_of(paths->items.begin(), paths->items.end(), [&](const auto& hit) {
+        return hit.torrent.hash == path.hash || hit.torrent.hash == both.hash;
+    }));
+    q.contentType = QStringLiteral("books");
+    const auto filtered = repo_->searchLocalPage(q, QStringLiteral("all"));
+    QVERIFY(filtered.has_value());
+    QCOMPARE(filtered->total, 1LL);
+    QCOMPARE(filtered->counts.value(QStringLiteral("total")), 3LL);
+
+    q.contentType.clear();
+    q.sort = QStringLiteral("size");
+    q.descending = true;
+    q.limit = 1;
+    const auto descending = repo_->searchLocalPage(q, QStringLiteral("all"));
+    QVERIFY(descending.has_value());
+    QCOMPARE(descending->items.first().torrent.hash, both.hash);
+
+    q.text.clear();
+    const auto browse = repo_->searchLocalPage(q, QStringLiteral("all"));
+    QVERIFY(browse.has_value());
+    QVERIFY(browse->counts.value(QStringLiteral("total")) >= 4);
+    QCOMPARE(browse->items.size(), 1);
+
+    q.text = title.hash;
+    QCOMPARE(repo_->searchLocalPage(q, QStringLiteral("all"))->total, 1LL);
+    QCOMPARE(repo_->searchLocalPage(q, QStringLiteral("filename"))->total, 0LL);
 }
 
 void TestManticoreQueries::testSearchByHash()

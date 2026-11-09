@@ -129,6 +129,12 @@ public:
     // Search -------------------------------------------------------------------
     QVector<domain::SearchHit> searchTorrents(const SearchQuery& query);
     QVector<domain::SearchHit> searchFiles(const SearchQuery& query);
+    struct LocalSearchPage {
+        QVector<domain::SearchHit> items;
+        QHash<QString, qint64> counts;
+        qint64 total = 0;
+    };
+    std::optional<LocalSearchPage> searchLocalPage(const SearchQuery& query, const QString& source);
     QVector<domain::Torrent> browse(const SearchQuery& query);
     QVector<domain::Torrent> recent(int limit = 10);
     QVector<domain::Torrent> top(const QString& type, const QString& time, int offset, int limit);
@@ -164,6 +170,7 @@ public:
     // database-sync worker while the GUI reads this, so the three fields have to
     // move together and be published atomically.
     Statistics statistics() const;
+    QHash<QString, qint64> contentTypeCounts(bool* ok = nullptr) const;
 
     // Row-id migration ---------------------------------------------------------
     // Outcome of one page of re-keying (see migrateRowIdPage).

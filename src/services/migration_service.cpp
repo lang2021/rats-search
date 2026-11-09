@@ -165,6 +165,19 @@ void MigrationService::registerMigrations()
         [this] { removeUnknownTorrents(); },
     });
 
+    // Recover retained Unknown rows that have no readable file list but whose
+    // title ends in a recognized file extension. This migration only changes
+    // classification fields; it never removes or rewrites torrent metadata.
+    registeredMigrations_.append({
+        "v2.3_reclassify_unknown_from_title_extension",
+        "2.0.0",
+        "",
+        "Classify Unknown torrents from recognized title extensions",
+        false,
+        nullptr,
+        [this] { reclassifyUnknownFromTitleExtension(); },
+    });
+
     // v2.2.8 - Re-key torrents and files from the sequential row id to one
     // derived from the infohash (blocking). Everything Rats looks up, it looks up
     // by hash, and `hash` is a plain string attribute with no index behind it, so
@@ -189,6 +202,16 @@ void MigrationService::registerMigrations()
         "Update spider walk interval to 100ms",
         true,
         [this] { return syncUpdateWalkInterval(); },
+        nullptr,
+    });
+
+    registeredMigrations_.append({
+        "v2.3_sync_reindex_chinese_search",
+        "2.0.0",
+        "",
+        "Reindex torrent names and file paths for Chinese search",
+        true,
+        [this] { return syncReindexChineseSearch(); },
         nullptr,
     });
 }
@@ -524,6 +547,49 @@ bool MigrationService::syncUpdateWalkInterval()
     return true;
 }
 
+bool MigrationService::syncReindexChineseSearch()
+{
+    if (!db_)
+        return false;
+
+    // RECONFIGURE changes the tokenizer for new writes only. Replace every
+    // existing document so its full-text fields are indexed with the new
+    // settings; never truncate either table or regenerate resource metadata.
+    constexpr int kPageSize = 100;
+    const QString migrationId = QStringLiteral("v2.3_sync_reindex_chinese_search");
+    const QStringList tables { QStringLiteral("torrents"), QStringLiteral("files") };
+    qint64 total = 0;
+    for (const QString& table : tables)
+        total += db_->count(table);
+    qint64 done = 0;
+    reportProgress(migrationId, done, total);
+
+    for (const QString& table : tables) {
+        if (!db_->execute(QStringLiteral("ALTER TABLE %1 RECONFIGURE").arg(table)))
+            return false;
+        qint64 cursor = 0;
+        for (;;) {
+            bool ok = false;
+            const auto rows = db_->query(
+                QStringLiteral("SELECT * FROM %1 WHERE id > ? ORDER BY id ASC LIMIT %2").arg(table).arg(kPageSize),
+                { cursor }, &ok);
+            if (!ok)
+                return false;
+            if (rows.isEmpty())
+                break;
+            if (!db_->replaceMany(table, rows))
+                return false;
+            cursor = rows.last().value(QStringLiteral("id")).toLongLong();
+            done += rows.size();
+            reportProgress(migrationId, qMin(done, total), total);
+            if (stopRequested_.load())
+                return false;
+        }
+    }
+    qInfo() << "[Migration] Chinese search reindexed" << done << "documents";
+    return true;
+}
+
 // ============================================================================
 // Async migrations
 // ============================================================================
@@ -754,6 +820,100 @@ void MigrationService::recategorizeTorrents()
     } else {
         qInfo() << "[Migration] stopped at ID" << lastId << ". Will resume on next startup.";
     }
+}
+
+// ============================================================================
+// Async migration: recover unambiguous title-extension classifications
+// ============================================================================
+
+void MigrationService::reclassifyUnknownFromTitleExtension()
+{
+    if (!db_ || !repository_) {
+        qWarning() << "[Migration] database/repository not available";
+        return;
+    }
+
+    qint64 startId = 0;
+    {
+        QMutexLocker locker(&stateMutex_);
+        startId = inProgressMigration_.lastProcessedId;
+        if (inProgressMigration_.totalItems == 0) {
+            inProgressMigration_.totalItems = db_->count(QStringLiteral("torrents"), QStringLiteral("contenttype = 0"));
+        }
+    }
+
+    qInfo() << "[Migration] classifying retained Unknown torrents from title extensions";
+    constexpr int batchSize = 100;
+    qint64 lastId = startId;
+    qint64 processed = startId;
+    int updated = 0;
+
+    while (!stopRequested_.load()) {
+        bool queryOk = false;
+        const auto rows = db_->query(
+            QStringLiteral("SELECT id, hash, name FROM torrents WHERE contenttype = 0 AND id > %1 "
+                           "ORDER BY id ASC LIMIT %2")
+                .arg(lastId)
+                .arg(batchSize),
+            {}, &queryOk);
+        if (!queryOk) {
+            qWarning() << "[Migration] failed reading Unknown torrents after id" << lastId
+                       << "; migration will resume on next startup";
+            stopRequested_.store(true);
+            return;
+        }
+        if (rows.isEmpty())
+            break;
+
+        for (const QVariantMap& row : rows) {
+            if (stopRequested_.load())
+                break;
+
+            const qint64 id = row.value(QStringLiteral("id")).toLongLong();
+            const QString hash = row.value(QStringLiteral("hash")).toString();
+            const QString name = row.value(QStringLiteral("name")).toString();
+            const auto files = repository_->filesOf(hash);
+            const auto classification = domain::ContentClassifier::classify(name, files);
+
+            // Unknown remains Other. Only a recognized extension (or an
+            // existing readable file list) can move the row to a known type.
+            if (classification.type != domain::ContentType::Unknown) {
+                if (repository_->updateClassification(hash, classification.type, classification.category))
+                    ++updated;
+                else {
+                    qWarning() << "[Migration] failed to update classification for" << hash.left(12);
+                    stopRequested_.store(true);
+                    break;
+                }
+            }
+
+            lastId = id;
+            ++processed;
+            QMutexLocker locker(&stateMutex_);
+            inProgressMigration_.lastProcessedId = lastId;
+            currentProgress_.current = processed;
+            currentProgress_.total = inProgressMigration_.totalItems;
+        }
+
+        QString migrationId;
+        qint64 total = 0;
+        {
+            QMutexLocker locker(&stateMutex_);
+            migrationId = inProgressMigration_.migrationId;
+            total = inProgressMigration_.totalItems;
+        }
+        emit migrationProgress(migrationId, processed, total);
+        if (!stopRequested_.load())
+            QThread::msleep(10);
+        if (rows.size() < batchSize)
+            break;
+    }
+
+    if (stopRequested_.load())
+        qInfo() << "[Migration] title-extension classification paused at id" << lastId;
+    else
+        qInfo() << "[Migration] title-extension classification complete; updated" << updated
+                << "of" << processed << "Unknown rows scanned";
 }
 
 // ============================================================================

@@ -38,6 +38,7 @@ public:
 
     QVector<domain::SearchHit> searchTorrents(const Request& request);
     QVector<domain::SearchHit> searchFiles(const Request& request);
+    std::optional<data::TorrentRepository::LocalSearchPage> searchLocalPage(const Request& request, const QString& source);
     QVector<domain::Torrent> browse(const Request& request);
 
     QVector<domain::Torrent> recent(int limit = 10);

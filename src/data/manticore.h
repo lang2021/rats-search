@@ -2,11 +2,15 @@
 #define RATS_DATA_MANTICORE_H
 
 #include <QObject>
+#include <QPointer>
 #include <QProcess>
 #include <QSqlDatabase>
 #include <QString>
 #include <QTimer>
 #include <memory>
+#include <atomic>
+
+class QThread;
 
 namespace rats::data {
 
@@ -21,6 +25,8 @@ namespace rats::data {
  */
 class Manticore : public QObject {
     Q_OBJECT
+
+    friend class TestManticoreHealthMonitor;
 
 public:
     enum class Status { Stopped, Starting, Running, Error };
@@ -110,6 +116,8 @@ private:
     bool createDatabaseDirectories();
     QString findSearchdPath();
     bool testConnection();
+    static bool testConnection(int port, const QString& connectionName);
+    void stopConnectionMonitor();
     void setStatus(Status status);
     // Log the reason a startup/runtime step failed and move to Status::Error.
     // Every failure path funnels through here, so the cause always reaches the
@@ -170,6 +178,9 @@ private:
 
     std::unique_ptr<QProcess> process_;
     std::unique_ptr<QTimer> connectionCheckTimer_;
+    QPointer<QThread> connectionProbeThread_;
+    std::atomic_bool connectionProbeInFlight_ { false };
+    quint64 connectionProbeGeneration_ = 0;
     bool isExternalInstance_;
     bool isWindowsDaemonMode_;
     QString connectionName_;

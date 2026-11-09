@@ -142,8 +142,10 @@ private:
     // find the rows that still carry a counter id, so no service may run against
     // a half-migrated table.
     bool syncDeriveRowIds();
+    bool syncReindexChineseSearch();
     // Async (background, resumable).
     void recategorizeTorrents();
+    void reclassifyUnknownFromTitleExtension();
     void removeUnknownTorrents();
 
     QString dataDirectory_;

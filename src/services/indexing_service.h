@@ -84,10 +84,6 @@ public:
         return insertBatch(std::move(torrents), BatchOptions());
     }
 
-    // Whether a torrent passes the current filter policy (used by the
-    // maintenance sweep that re-applies filters to the existing index).
-    bool accepts(const domain::Torrent& torrent) const;
-
 signals:
     // Only the hash and name of fresh rows in a fully confirmed batch.
     void batchIndexed(const QMap<QString, QString>& names);

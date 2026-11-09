@@ -19,6 +19,33 @@ static rats::Result request(WatchStore& watch, const QString& method, const QJso
 class TestWatch : public QObject {
     Q_OBJECT
 private slots:
+    void filteredPagingAndBulkRead()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        WatchStore watch(dir.path());
+        QVERIFY(request(watch, "watch.add", {{"keyword", "Ubuntu"}}).ok());
+        QVERIFY(request(watch, "watch.add", {{"keyword", "Blender"}}).ok());
+        const QString a(40, 'a'), b(40, 'b'), c(40, 'c');
+        watch.observe({{a, "Ubuntu Desktop"}, {b, "Ubuntu Studio"}, {c, "Blender"}});
+
+        auto page = request(watch, "watch.list", {{"ruleId", 1}}).data().toObject();
+        QCOMPARE(page["matches"].toArray().size(), 2);
+        QVERIFY(!page["more"].toBool());
+        page = request(watch, "watch.list", {{"ruleId", 1}, {"unreadOnly", true}}).data().toObject();
+        QCOMPARE(page["matches"].toArray().size(), 2);
+
+        QVERIFY(request(watch, "watch.readAll", {{"ruleId", 1}}).ok());
+        QCOMPARE(request(watch, "watch.unread").data().toInt(), 1);
+        page = request(watch, "watch.list", {{"ruleId", 1}, {"unreadOnly", true}}).data().toObject();
+        QVERIFY(page["matches"].toArray().isEmpty());
+
+        QVERIFY(request(watch, "watch.readAll").ok());
+        QCOMPARE(request(watch, "watch.unread").data().toInt(), 0);
+        // Bulk marking an empty scope remains an idempotent success.
+        QVERIFY(request(watch, "watch.readAll").ok());
+    }
+
     void matchingAndRestart()
     {
         QTemporaryDir dir;

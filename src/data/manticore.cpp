@@ -66,6 +66,9 @@ constexpr qint64 kMaxSearchdLogBytes = 16 * 1024 * 1024;
 
 // Connection timeout (seconds) used by the lightweight readiness probe.
 constexpr int kTestConnectTimeoutSec = 1;
+constexpr int kTestReadTimeoutSec = 2;
+constexpr int kTestWriteTimeoutSec = 2;
+constexpr unsigned long kProbeShutdownWaitMs = 3000;
 
 // waitForReady() polling cadence.
 constexpr int kFastPollIntervalMs = 50; // initial tight polling for fast startups
@@ -127,6 +130,8 @@ Manticore::Manticore(const QString& dataDirectory, QObject* parent)
 
 Manticore::~Manticore()
 {
+    stopConnectionMonitor();
+
     // Disconnect all signals before stopping to prevent spurious error messages
     if (process_) {
         disconnect(process_.get(), nullptr, this, nullptr);
@@ -359,7 +364,7 @@ bool Manticore::start()
 
 void Manticore::stop()
 {
-    connectionCheckTimer_->stop();
+    stopConnectionMonitor();
 
     // Guard against double-stop calls
     if (status_ == Status::Stopped) {
@@ -747,9 +752,69 @@ bool Manticore::resetBinlog()
 
 void Manticore::checkConnection()
 {
-    if (!testConnection() && status_ == Status::Running) {
-        fail("Lost connection to Manticore");
+    if (status_ != Status::Running || connectionProbeInFlight_.exchange(true))
+        return;
+
+    // Keep only one probe in flight. In particular, a stalled local SQL
+    // response must never block the Qt thread that also services HTTP and UI.
+    if (connectionProbeThread_ && connectionProbeThread_->isFinished()) {
+        connectionProbeThread_->deleteLater();
+        connectionProbeThread_ = nullptr;
     }
+
+    const int probePort = port_;
+    const QString probeConnectionName = connectionName_ + QStringLiteral("_health");
+    const quint64 generation = connectionProbeGeneration_;
+    QPointer<Manticore> self(this);
+    connectionProbeThread_ = QThread::create([self, probePort, probeConnectionName, generation]() {
+        const bool connected = Manticore::testConnection(probePort, probeConnectionName);
+        if (!self)
+            return;
+
+        QMetaObject::invokeMethod(self, [self, connected, generation]() {
+            if (!self)
+                return;
+            self->connectionProbeInFlight_.store(false);
+            if (generation != self->connectionProbeGeneration_)
+                return;
+            if (!connected && self->status_ == Status::Running)
+                self->fail("Lost connection to Manticore");
+        }, Qt::QueuedConnection);
+    });
+
+    connect(connectionProbeThread_, &QThread::finished, connectionProbeThread_, &QObject::deleteLater);
+    connectionProbeThread_->start();
+}
+
+void Manticore::stopConnectionMonitor()
+{
+    if (connectionCheckTimer_)
+        connectionCheckTimer_->stop();
+    ++connectionProbeGeneration_;
+
+    if (!connectionProbeThread_) {
+        // A timed-out worker may have been detached; its queued completion
+        // callback is responsible for clearing the in-flight flag. Keeping it
+        // set prevents a restarted monitor from overlapping that last probe.
+        return;
+    }
+
+    QThread* probeThread = connectionProbeThread_.data();
+    if (probeThread->isRunning() && !probeThread->wait(kProbeShutdownWaitMs)) {
+        // The SQL client has its own bounded connect/read/write timeouts. If a
+        // driver nevertheless fails to honor them, let the isolated worker
+        // finish and self-delete rather than blocking or invalidating a live
+        // QThread during application shutdown.
+        qWarning() << "Manticore health probe did not stop within"
+                   << kProbeShutdownWaitMs << "ms; detaching its bounded worker";
+        connectionProbeThread_ = nullptr;
+        return;
+    }
+
+    disconnect(probeThread, nullptr, this, nullptr);
+    delete probeThread;
+    connectionProbeThread_ = nullptr;
+    connectionProbeInFlight_.store(false);
 }
 
 bool Manticore::generateConfig()
@@ -761,6 +826,10 @@ index torrents
     path = %1/torrents
     
     min_prefix_len = 3
+    min_infix_len = 2
+    charset_table = non_cont
+    ngram_len = 1
+    ngram_chars = cont
     expand_keywords = 1
     
     rt_attr_string = hash
@@ -789,6 +858,11 @@ index files
 {
     type = rt
     path = %1/files
+
+    min_infix_len = 2
+    charset_table = non_cont
+    ngram_len = 1
+    ngram_chars = cont
     
     rt_field = path
     rt_attr_string = hash
@@ -948,17 +1022,28 @@ QString Manticore::findSearchdPath()
 
 bool Manticore::testConnection()
 {
+    return testConnection(port_, connectionName_);
+}
+
+bool Manticore::testConnection(int port, const QString& connectionName)
+{
     // Use a temporary connection for testing with a short timeout.
-    QString testConnName = connectionName_ + "_test";
+    const auto threadId = reinterpret_cast<quintptr>(QThread::currentThreadId());
+    const QString testConnName = connectionName + QStringLiteral("_test_%1").arg(threadId, 0, 16);
     bool success = false;
 
     {
         QSqlDatabase db = QSqlDatabase::addDatabase("QMYSQL", testConnName);
         db.setHostName("127.0.0.1");
-        db.setPort(port_);
+        db.setPort(port);
         db.setDatabaseName("");
-        // Set a short connection timeout (1 second instead of the default ~30s).
-        db.setConnectOptions(QStringLiteral("MYSQL_OPT_CONNECT_TIMEOUT=%1").arg(kTestConnectTimeoutSec));
+        // Bound both the TCP connect and protocol reads/writes. A connect
+        // timeout alone does not bound SHOW STATUS if searchd accepts the
+        // socket and then stops responding.
+        db.setConnectOptions(QStringLiteral("MYSQL_OPT_CONNECT_TIMEOUT=%1;MYSQL_OPT_READ_TIMEOUT=%2;MYSQL_OPT_WRITE_TIMEOUT=%3")
+                                 .arg(kTestConnectTimeoutSec)
+                                 .arg(kTestReadTimeoutSec)
+                                 .arg(kTestWriteTimeoutSec));
 
         if (db.open()) {
             QSqlQuery query(db);
@@ -967,8 +1052,8 @@ bool Manticore::testConnection()
             db.close();
         } else {
             // Log the error once to help diagnose connection issues.
-            static bool errorLogged = false;
-            if (!errorLogged) {
+            static std::atomic_bool errorLogged { false };
+            if (!errorLogged.exchange(true)) {
                 qWarning() << "testConnection: db.open() failed:" << db.lastError().text();
                 qWarning() << "Available SQL drivers:" << QSqlDatabase::drivers();
                 errorLogged = true;

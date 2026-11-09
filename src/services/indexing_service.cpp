@@ -242,9 +242,4 @@ IndexingService::BatchResult IndexingService::insertBatch(
     return result;
 }
 
-bool IndexingService::accepts(const domain::Torrent& torrent) const
-{
-    return !filter_ || filter_->accepts(torrent);
-}
-
 } // namespace rats::service

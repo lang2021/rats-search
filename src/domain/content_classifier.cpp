@@ -140,6 +140,13 @@ Classification ContentClassifier::classify(const QString& name, const QVector<Fi
     Classification result;
     result.type = detectTypeFromFiles(files);
 
+    // Feed and peer-sync records may have a title and declared file count but
+    // no readable file-list row. In that case, use only a recognized extension
+    // at the end of the torrent title as a conservative fallback. Do not let a
+    // title override an actual file-list classification.
+    if (result.type == ContentType::Unknown)
+        result.type = contentTypeFromString(detectFileType(name));
+
     // Adult-content sub-categorisation only applies to media-ish types.
     if (result.type == ContentType::Video || result.type == ContentType::Pictures
         || result.type == ContentType::Archive) {

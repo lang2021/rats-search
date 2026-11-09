@@ -27,6 +27,21 @@ const QString kListColumns = QStringLiteral(
     "trackersChecked, good, bad");
 constexpr int kInfoNameMaxLength = 800;
 
+QString searchTerms(const QString& text)
+{
+    // A short term can sit inside one uninterrupted Chinese title/path token.
+    // Keep multi-word and explicit wildcard queries on their existing path.
+    const QString trimmed = text.trimmed();
+    const QString escaped = sql::escapeMatch(trimmed);
+    static const QRegularExpression han(QStringLiteral("^[\\p{Han}]+$"));
+    if (han.match(trimmed).hasMatch())
+        return QLatin1Char('"') + escaped + QLatin1Char('"');
+    if (trimmed.size() >= 2 && !trimmed.contains(QRegularExpression(QStringLiteral("\\s")))
+        && !trimmed.contains(QLatin1Char('*')))
+        return QLatin1Char('*') + escaped + QLatin1Char('*');
+    return escaped;
+}
+
 // Split the "\n"-joined path/size blobs stored in the files table back into a
 // file list.
 QVector<File> parseFileBlob(const QString& pathBlob, const QString& sizeBlob)
@@ -112,6 +127,29 @@ TorrentRepository::Statistics TorrentRepository::statistics() const
 {
     QMutexLocker lock(&statsMutex_);
     return stats_;
+}
+
+QHash<QString, qint64> TorrentRepository::contentTypeCounts(bool* ok) const
+{
+    bool queryOk = false;
+    const auto rows = db_->query(QStringLiteral("SELECT contentType, COUNT(*) AS cnt FROM torrents GROUP BY contentType"),
+        {}, &queryOk);
+    if (ok)
+        *ok = queryOk;
+    if (!queryOk)
+        return {};
+
+    QHash<QString, qint64> counts;
+    qint64 total = 0;
+    for (const auto& row : rows) {
+        const qint64 count = row.value(QStringLiteral("cnt")).toLongLong();
+        total += count;
+        const auto type = domain::contentTypeFromId(row.value(QStringLiteral("contenttype")).toInt());
+        const QString name = domain::toString(type);
+        counts.insert(name.isEmpty() ? QStringLiteral("other") : name, count);
+    }
+    counts.insert(QStringLiteral("total"), total);
+    return counts;
 }
 
 void TorrentRepository::bumpStatistics(qint64 torrents, qint64 files, qint64 totalSize)
@@ -398,6 +436,8 @@ QString TorrentRepository::contentTypeFilter(const QString& type)
 {
     if (type.isEmpty())
         return QString();
+    if (type == QLatin1String("other"))
+        return QStringLiteral("contentType = %1").arg(domain::toId(ContentType::Unknown));
     // "application" spans both Software and Games in the UI.
     if (type == QLatin1String("application")) {
         return QStringLiteral("contentType IN (%1, %2)")
@@ -430,8 +470,12 @@ QVector<SearchHit> TorrentRepository::searchTorrents(const SearchQuery& q)
     const bool byHash = hexRe.match(q.text).hasMatch();
     if (byHash)
         builder.whereEq(QStringLiteral("id"), rowIdFromHash(q.text));
-    else
-        builder.matchAgainst(q.text);
+    else {
+        builder.whereRaw(QStringLiteral("MATCH(%1)").arg(sql::quote(searchTerms(q.text))));
+        static const QRegularExpression han(QStringLiteral("^[\\p{Han}]+$"));
+        if (han.match(q.text.trimmed()).hasMatch())
+            builder.whereRaw(QStringLiteral("REGEX(name, %1)").arg(sql::quote(q.text.trimmed())));
+    }
 
     if (q.safeSearch)
         builder.whereRaw(QStringLiteral("contentCategory != %1").arg(domain::toId(ContentCategory::XXX)));
@@ -461,54 +505,65 @@ QVector<SearchHit> TorrentRepository::searchFiles(const SearchQuery& q)
     if (q.text.isEmpty())
         return hits;
 
-    // SNIPPET highlights matching file paths; MATCH selects the rows.
-    const QString sql = QStringLiteral("SELECT *, SNIPPET(path, ?, 'around=100', "
-                                       "'force_all_words=1') AS snippet FROM "
-                                       "files WHERE MATCH(?) LIMIT ?,?");
-    const auto fileRows = db_->query(sql, { q.text, sql::escapeMatch(q.text), q.offset, q.limit });
-    if (fileRows.isEmpty())
-        return hits;
+    // MATCH uses the index to narrow candidates. With 1-gram Chinese tokens it
+    // may also match "高 清", so verify contiguous text against stored paths
+    // before counting a row toward pagination. Keyset paging avoids max_matches.
+    const QString sql = QStringLiteral("SELECT id, hash, path, SNIPPET(path, ?, 'around=100', "
+                                       "'force_all_words=1') AS snippet FROM files "
+                                       "WHERE MATCH(?) AND id > ? ORDER BY id ASC LIMIT 100");
+    qint64 cursor = 0;
+    int skipped = 0;
+    static const QRegularExpression han(QStringLiteral("^[\\p{Han}]+$"));
+    const bool literalHan = han.match(q.text.trimmed()).hasMatch();
+    while (hits.size() < q.limit) {
+        bool fileReadOk = false;
+        const auto fileRows = db_->query(sql, { q.text, searchTerms(q.text), cursor }, &fileReadOk);
+        if (!fileReadOk || fileRows.isEmpty())
+            break;
+        cursor = fileRows.last().value(QStringLiteral("id")).toLongLong();
 
-    QHash<QString, QStringList> snippetsByHash;
-    QStringList orderedHashes;
-    for (const auto& row : fileRows) {
-        const QString hash = row.value(QStringLiteral("hash")).toString();
-        for (const QString& line : row.value(QStringLiteral("snippet")).toString().split(QLatin1Char('\n'))) {
-            if (line.contains(QLatin1String("<b>"))) {
-                if (!snippetsByHash.contains(hash))
-                    orderedHashes << hash;
-                snippetsByHash[hash].append(line);
+        QHash<QString, QStringList> pathsByHash;
+        QStringList orderedHashes;
+        for (const auto& row : fileRows) {
+            const QString hash = row.value(QStringLiteral("hash")).toString();
+            for (const QString& path : row.value(QStringLiteral("path")).toString().split(QLatin1Char('\n'))) {
+                if (!path.contains(q.text.trimmed(), Qt::CaseInsensitive))
+                    continue;
+                if (!pathsByHash.contains(hash)) orderedHashes << hash;
+                pathsByHash[hash].append(path);
+            }
+            if (literalHan || pathsByHash.contains(hash))
+                continue;
+            for (const QString& path : row.value(QStringLiteral("snippet")).toString().split(QLatin1Char('\n'))) {
+                if (!path.contains(QLatin1String("<b>"))) continue;
+                if (!pathsByHash.contains(hash)) orderedHashes << hash;
+                pathsByHash[hash].append(path);
             }
         }
-    }
-    if (orderedHashes.isEmpty())
-        return hits;
+        if (orderedHashes.isEmpty()) continue;
 
-    // The content-type filter applies to the parent torrent, so it belongs on
-    // this lookup rather than on the file-path MATCH above.
-    QHash<qint64, QStringList> wantedParents;
-    const QVector<qint64> parentIds = idsFor(orderedHashes, wantedParents);
-    SelectQuery parents(kTorrents);
-    parents.columns(kListColumns);
-    parents.whereInIds(QStringLiteral("id"), parentIds);
-    parents.whereRaw(contentTypeFilter(q.contentType));
-    applyRangeFilters(parents, q);
-    for (const auto& row : db_->query(parents.build())) {
-        Torrent t = rowToTorrent(row);
-        if (!wantedMatches(wantedParents.value(t.id), t.hash))
-            continue; // id collision
-        if (q.safeSearch && t.contentCategory == ContentCategory::XXX)
-            continue;
-
-        SearchHit hit;
-        hit.torrent = t;
-        hit.fromFileMatch = true;
-        hit.matchingPaths = snippetsByHash.value(t.hash);
-        // File-match hits carry only the matched paths, so give consumers a
-        // lightweight fileList built from them (sizes are unknown here).
-        for (const QString& path : hit.matchingPaths)
-            hit.torrent.fileList.append(File { path, 0 });
-        hits.append(hit);
+        QHash<qint64, QStringList> wantedParents;
+        const QVector<qint64> parentIds = idsFor(orderedHashes, wantedParents);
+        SelectQuery parents(kTorrents);
+        parents.columns(kListColumns);
+        parents.whereInIds(QStringLiteral("id"), parentIds);
+        parents.whereRaw(contentTypeFilter(q.contentType));
+        applyRangeFilters(parents, q);
+        parents.orderBy(QStringLiteral("id"), false).limit(0, parentIds.size());
+        for (const auto& row : db_->query(parents.build())) {
+            Torrent t = rowToTorrent(row);
+            if (!wantedMatches(wantedParents.value(t.id), t.hash)) continue;
+            if (q.safeSearch && t.contentCategory == ContentCategory::XXX) continue;
+            if (skipped++ < q.offset) continue;
+            SearchHit hit;
+            hit.torrent = t;
+            hit.fromFileMatch = true;
+            hit.matchingPaths = pathsByHash.value(t.hash);
+            for (const QString& path : hit.matchingPaths)
+                hit.torrent.fileList.append(File { path, 0 });
+            hits.append(hit);
+            if (hits.size() >= q.limit) break;
+        }
     }
 
     if (const QString column = resolveSortColumn(q.sort); !column.isEmpty()) {
@@ -521,6 +576,179 @@ QVector<SearchHit> TorrentRepository::searchFiles(const SearchQuery& q)
         });
     }
     return hits;
+}
+
+std::optional<TorrentRepository::LocalSearchPage> TorrentRepository::searchLocalPage(
+    const SearchQuery& q, const QString& source)
+{
+    if (source != QLatin1String("all") && source != QLatin1String("filename")
+        && source != QLatin1String("content"))
+        return std::nullopt;
+
+    LocalSearchPage page;
+    for (const QString& type : { QStringLiteral("total"), QStringLiteral("video"), QStringLiteral("audio"),
+             QStringLiteral("books"), QStringLiteral("pictures"), QStringLiteral("software"),
+             QStringLiteral("games"), QStringLiteral("archive"), QStringLiteral("other") })
+        page.counts.insert(type, 0);
+    const QString needle = q.text.trimmed();
+    if (needle.isEmpty()) {
+        // Browsing has no file-path lane. Count the same safe-search population
+        // that the page query reads, including categories with no UI tab.
+        QString countSql = QStringLiteral("SELECT contentType, COUNT(*) AS cnt FROM torrents");
+        if (q.safeSearch)
+            countSql += QStringLiteral(" WHERE contentCategory != %1").arg(domain::toId(ContentCategory::XXX));
+        countSql += QStringLiteral(" GROUP BY contentType");
+        bool ok = false;
+        const auto rows = db_->query(countSql, {}, &ok);
+        if (!ok) return std::nullopt;
+        for (const auto& row : rows) {
+            const qint64 count = row.value(QStringLiteral("cnt")).toLongLong();
+            page.counts[QStringLiteral("total")] += count;
+            const QString type = domain::toString(domain::contentTypeFromId(row.value(QStringLiteral("contenttype")).toInt()));
+            page.counts[type.isEmpty() ? QStringLiteral("other") : type] += count;
+        }
+        SelectQuery builder(kTorrents);
+        builder.columns(kListColumns);
+        if (q.safeSearch)
+            builder.whereRaw(QStringLiteral("contentCategory != %1").arg(domain::toId(ContentCategory::XXX)));
+        builder.whereRaw(contentTypeFilter(q.contentType));
+        const QString sortColumn = resolveSortColumn(q.sort);
+        builder.orderBy(sortColumn.isEmpty() ? QStringLiteral("added") : sortColumn,
+            sortColumn.isEmpty() ? true : q.descending);
+        builder.thenBy(QStringLiteral("id"), true);
+        builder.limit(q.offset, q.limit);
+        const auto browseRows = db_->query(builder.build(), {}, &ok);
+        if (!ok) return std::nullopt;
+        for (const auto& row : browseRows) page.items.append(SearchHit { rowToTorrent(row) });
+        page.total = q.contentType.isEmpty() ? page.counts.value(QStringLiteral("total")) : page.counts.value(q.contentType);
+        return page;
+    }
+
+    // Collect by hash before filtering by category or paging. Both lanes walk
+    // with a docid cursor because OFFSET beyond max_matches silently loses the
+    // rest of a large result set in Manticore.
+    QHash<QString, SearchHit> matches;
+    const bool byHash = QRegularExpression(QStringLiteral("^[0-9a-fA-F]{40}$")).match(needle).hasMatch();
+    const QStringList words = needle.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    const auto containsWords = [&](const QString& text) {
+        for (const QString& word : words)
+            if (!text.contains(word, Qt::CaseInsensitive)) return false;
+        return !words.isEmpty();
+    };
+    const auto titleMatches = [&](const Torrent& torrent) {
+        if (byHash) return sameHash(torrent.hash, needle);
+        return containsWords(torrent.name);
+    };
+    if (source != QLatin1String("content") && (!byHash || source == QLatin1String("all"))) {
+        qint64 cursor = 0;
+        while (true) {
+            SelectQuery titles(kTorrents);
+            titles.columns(kListColumns);
+            if (byHash) titles.whereEq(QStringLiteral("id"), rowIdFromHash(needle));
+            else titles.whereRaw(QStringLiteral("MATCH(%1)").arg(sql::quote(searchTerms(needle))));
+            titles.whereRaw(QStringLiteral("id > %1").arg(cursor));
+            if (q.safeSearch)
+                titles.whereRaw(QStringLiteral("contentCategory != %1").arg(domain::toId(ContentCategory::XXX)));
+            applyRangeFilters(titles, q);
+            titles.orderBy(QStringLiteral("id"), false).limit(0, 100);
+            bool ok = false;
+            const auto rows = db_->query(titles.build(), {}, &ok);
+            if (!ok) return std::nullopt;
+            if (rows.isEmpty()) break;
+            cursor = rows.last().value(QStringLiteral("id")).toLongLong();
+            for (const auto& row : rows) {
+                Torrent torrent = rowToTorrent(row);
+                if (titleMatches(torrent)) matches.insert(torrent.hash.toLower(), SearchHit { torrent });
+            }
+            if (byHash || rows.size() < 100) break;
+        }
+    }
+    if (source != QLatin1String("filename") && !byHash) {
+        const QString fileSql = QStringLiteral(
+            "SELECT id, hash, path FROM files WHERE MATCH(?) AND id > ? ORDER BY id ASC LIMIT 100");
+        qint64 cursor = 0;
+        while (true) {
+            bool ok = false;
+            const auto fileRows = db_->query(fileSql, { searchTerms(needle), cursor }, &ok);
+            if (!ok) return std::nullopt;
+            if (fileRows.isEmpty()) break;
+            cursor = fileRows.last().value(QStringLiteral("id")).toLongLong();
+            QHash<QString, QStringList> pathsByHash;
+            for (const auto& row : fileRows) {
+                const QString hash = row.value(QStringLiteral("hash")).toString().toLower();
+                for (const QString& path : row.value(QStringLiteral("path")).toString().split(QLatin1Char('\n'))) {
+                    if (containsWords(path)) pathsByHash[hash].append(path);
+                }
+            }
+            if (!pathsByHash.isEmpty()) {
+                QHash<qint64, QStringList> wanted;
+                const auto ids = idsFor(pathsByHash.keys(), wanted);
+                SelectQuery parents(kTorrents);
+                parents.columns(kListColumns).whereInIds(QStringLiteral("id"), ids);
+                applyRangeFilters(parents, q);
+                parents.orderBy(QStringLiteral("id"), false).limit(0, ids.size());
+                const auto parentRows = db_->query(parents.build(), {}, &ok);
+                if (!ok) return std::nullopt;
+                for (const auto& row : parentRows) {
+                    Torrent torrent = rowToTorrent(row);
+                    const QString key = torrent.hash.toLower();
+                    if (!wantedMatches(wanted.value(torrent.id), key)) continue;
+                    if (q.safeSearch && torrent.contentCategory == ContentCategory::XXX) continue;
+                    // A title match wins in the combined view, while the path
+                    // stays available as evidence of the second matching source.
+                    SearchHit hit = matches.value(key);
+                    if (hit.torrent.hash.isEmpty()) {
+                        hit.torrent = torrent;
+                        hit.fromFileMatch = true;
+                    }
+                    hit.matchingPaths = pathsByHash.value(key);
+                    matches.insert(key, hit);
+                }
+            }
+            if (fileRows.size() < 100) break;
+        }
+    }
+
+    QVector<SearchHit> selected;
+    selected.reserve(matches.size());
+    for (const auto& hit : matches) {
+        page.counts[QStringLiteral("total")]++;
+        const QString type = domain::toString(hit.torrent.contentType);
+        const QString category = type.isEmpty() ? QStringLiteral("other") : type;
+        page.counts[category]++;
+        if (q.contentType.isEmpty() || category == q.contentType)
+            selected.append(hit);
+    }
+    page.total = selected.size();
+    const QString sort = resolveSortColumn(q.sort);
+    std::sort(selected.begin(), selected.end(), [&](const SearchHit& a, const SearchHit& b) {
+        const Torrent& left = a.torrent;
+        const Torrent& right = b.torrent;
+        int order = 0;
+        if (sort == QLatin1String("name")) order = QString::compare(left.name, right.name, Qt::CaseInsensitive);
+        else {
+            qint64 lhs = 0, rhs = 0;
+            if (sort == QLatin1String("size")) { lhs = left.size; rhs = right.size; }
+            else if (sort == QLatin1String("seeders")) { lhs = left.seeders; rhs = right.seeders; }
+            else if (sort == QLatin1String("added")) { lhs = left.added.toSecsSinceEpoch(); rhs = right.added.toSecsSinceEpoch(); }
+            else if (sort == QLatin1String("files")) { lhs = left.files; rhs = right.files; }
+            else if (sort == QLatin1String("leechers")) { lhs = left.leechers; rhs = right.leechers; }
+            else if (sort == QLatin1String("completed")) { lhs = left.completed; rhs = right.completed; }
+            else if (source == QLatin1String("all") && a.fromFileMatch != b.fromFileMatch)
+                order = a.fromFileMatch ? 1 : -1;
+            if (sort.isEmpty() && order == 0) {
+                lhs = right.added.toSecsSinceEpoch();
+                rhs = left.added.toSecsSinceEpoch();
+            }
+            if (lhs != rhs) order = lhs < rhs ? -1 : 1;
+        }
+        if (order == 0) return left.hash < right.hash;
+        return q.descending && !sort.isEmpty() ? order > 0 : order < 0;
+    });
+    const int first = qBound(0, q.offset, selected.size());
+    const int last = qBound(first, first + q.limit, selected.size());
+    for (int i = first; i < last; ++i) page.items.append(selected.at(i));
+    return page;
 }
 
 QVector<Torrent> TorrentRepository::recent(int limit)

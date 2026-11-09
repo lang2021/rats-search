@@ -59,7 +59,6 @@ public:
 
     // Freshness is config-driven, and config arrives after construction.
     void setPolicy(const Policy& policy) { policy_ = policy; }
-    Policy policy() const { return policy_; }
 
     // Path of the live dump (empty when there is none), and of the file a
     // generation writes into. The temporary is renamed to a *new* name on

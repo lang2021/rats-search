@@ -90,6 +90,11 @@ public:
             const auto rules = rows(q);
             QString sql = "SELECT m.id,r.keyword,m.hash,m.name,m.time,m.seen FROM matches m JOIN rules r ON r.id=m.rule WHERE 1=1";
             QVariantList args;
+            const auto ruleId = p["ruleId"].toInteger();
+            if (ruleId > 0) {
+                sql += " AND m.rule=?";
+                args.append(ruleId);
+            }
             if (p["unreadOnly"].toBool()) sql += " AND m.seen=0";
             if (const auto before = p["before"].toInteger(); before > 0) {
                 sql += " AND m.id<?";
@@ -108,6 +113,15 @@ public:
             if (!execute(q, "INSERT INTO rules(keyword) VALUES(?) ON CONFLICT(keyword) DO NOTHING", {keyword}))
                 return sqlFailure(q.lastError());
             if (!q.numRowsAffected()) return Result::failure("该关键词已存在");
+        } else if (method == "watch.readAll") {
+            const auto ruleId = p["ruleId"].toInteger();
+            const bool ok = ruleId > 0
+                ? execute(q, "UPDATE matches SET seen=1 WHERE seen=0 AND rule=?", {ruleId})
+                : execute(q, "UPDATE matches SET seen=1 WHERE seen=0");
+            if (!ok) return sqlFailure(q.lastError());
+            changed = q.numRowsAffected() > 0;
+            // Marking an already-read or empty scope is a valid idempotent operation.
+            return Result::success(true);
         } else if (id <= 0) {
             return Result::failure("无效的 Watch 记录编号");
         } else if (method == "watch.enable" && p["enabled"].isBool()) {
