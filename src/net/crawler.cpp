@@ -465,6 +465,8 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
     const QString peerIp = request.peerIp;
     const uint16_t peerPort = request.peerPort;
     auto gate = callbackGate_;
+    const auto peerObserver = peerObserver_;
+    const auto cachedPeers = metadataPeerProvider_ ? metadataPeerProvider_(infoHash) : std::vector<PeerHint>{};
 
     // librats manages the temporary torrent, the BEP 9 fetch and the timeout; it
     // invokes this callback exactly once (success or timeout) on a worker thread.
@@ -507,18 +509,26 @@ void Crawler::fetchMetadata(const MetadataRequest& request)
         : request.source == DiscoverySource::Announce
             ? librats::Bittorrent::MetadataOrigin::Announce
             : librats::Bittorrent::MetadataOrigin::Sample;
+    librats::Bittorrent::MetadataObservation observation;
+    observation.on_peer = [peerObserver, infoHash](const std::string& ip, uint16_t port, const char* state) {
+        if (peerObserver && state)
+            peerObserver(infoHash, QString::fromStdString(ip), port, std::string(state) == "handshake");
+    };
     uint64_t taskId = 0;
     if (!peerIp.isEmpty() && peerPort > 0) {
         // Fast path: fetch directly from the announcing peer (no DHT search).
         qDebug() << "Fetching metadata for" << infoHash.left(8) << "directly from" << peerIp << ":" << peerPort;
-        taskId = bt->get_torrent_metadata_from_peer(infoHash.toStdString(), peerIp.toStdString(), peerPort, onResult, librats::Bittorrent::kMetadataTimeoutMs, origin);
+        taskId = bt->get_torrent_metadata_from_peer(infoHash.toStdString(), peerIp.toStdString(), peerPort, onResult, librats::Bittorrent::kMetadataTimeoutMs, origin, observation);
     } else {
         // Slow path: let librats find peers via the DHT.
         qDebug() << "Fetching metadata for" << infoHash.left(8) << "via DHT search";
-        taskId = bt->get_torrent_metadata(infoHash.toStdString(), onResult, librats::Bittorrent::kMetadataTimeoutMs, origin);
+        taskId = bt->get_torrent_metadata(infoHash.toStdString(), onResult, librats::Bittorrent::kMetadataTimeoutMs, origin, observation);
     }
     if (taskId) {
         activeMetadataTaskIds_.insert(infoHash, taskId);
+        for (const auto& hint : cachedPeers)
+            if (peerIp != hint.ip || peerPort != hint.port)
+                bt->add_metadata_peer(infoHash.toStdString(), taskId, hint.ip.toStdString(), hint.port);
         emit metadataStarted(infoHash, !peerIp.isEmpty() && peerPort);
     }
 #else

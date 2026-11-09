@@ -11,6 +11,7 @@
 namespace rats::app {
 class ConfigStore;
 class WatchStore;
+class ExplorerStore;
 class FavoritesStore;
 class SearchHistoryStore;
 } // namespace rats::app
@@ -63,7 +64,6 @@ public:
         QString webuiDir;
         QString apiBindAddress;
         QStringList apiFileRoots;
-        QString legacyWebuiDir;
         bool headless = false; // --console mode (no widgets)
         // CLI overrides (0 / false => use the stored config value).
         int p2pPort = 0;
@@ -101,6 +101,7 @@ public:
     // (database, transport) only after start().
     ConfigStore* config() const;
     WatchStore* watch() const;
+    ExplorerStore* explorer() const;
     FavoritesStore* favorites() const;
     SearchHistoryStore* searchHistory() const;
     data::TorrentRepository* torrents() const;

@@ -3,6 +3,7 @@
 #include "app/config_store.h"
 #include "app/favorites_store.h"
 #include "app/watch_store.h"
+#include "app/explorer_store.h"
 #include "app/search_history_store.h"
 #include "app/translation_manager.h"
 #include "common/logging.h"
@@ -55,6 +56,7 @@ struct Application::Private {
     // Adapters (owned, constructed in dependency order)
     std::unique_ptr<ConfigStore> config;
     std::unique_ptr<WatchStore> watch;
+    std::unique_ptr<ExplorerStore> explorer;
     std::unique_ptr<FavoritesStore> favorites;
     std::unique_ptr<SearchHistoryStore> searchHistory;
     std::unique_ptr<data::Manticore> manticore;
@@ -113,6 +115,7 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     translations.setLanguage(language);
 
     d_->watch = std::make_unique<WatchStore>(dataDir);
+    d_->explorer = std::make_unique<ExplorerStore>(dataDir);
     d_->favorites = std::make_unique<FavoritesStore>(dataDir);
     d_->searchHistory = std::make_unique<SearchHistoryStore>(dataDir);
 
@@ -130,6 +133,14 @@ Application::Application(Options options, QObject* parent) : QObject(parent), d_
     d_->transport->setIndependentDirect(cfg->independentDirect());
     d_->engine = std::make_unique<net::TorrentEngine>(d_->transport.get());
     d_->crawler = std::make_unique<net::Crawler>(d_->transport.get());
+    d_->crawler->setMetadataPeerProvider([this](const QString& hash) {
+        std::vector<net::Crawler::PeerHint> hints;
+        for (const auto& peer : d_->explorer->peers(hash)) hints.push_back({peer.ip, peer.port});
+        return hints;
+    });
+    d_->crawler->setPeerObserver([this](const QString& hash, const QString& ip, uint16_t port, bool handshake) {
+        d_->explorer->recordPeer(hash, ip, port, handshake);
+    });
     d_->swarmScraper = std::make_unique<net::SwarmScraper>();
     d_->siteScraper = std::make_unique<net::TrackerSiteScraper>();
 
@@ -329,9 +340,6 @@ bool Application::start()
     if (d_->config->restApiEnabled() || !d_->options.webuiDir.isEmpty()) {
         if (!d_->options.webuiDir.isEmpty())
             d_->apiServer->setWebuiDir(d_->options.webuiDir);
-        d_->apiServer->setLegacyWebuiDir(d_->options.legacyWebuiDir.isEmpty()
-                ? QDir::currentPath() + QStringLiteral("/webui")
-                : d_->options.legacyWebuiDir);
         d_->apiServer->setAuthorizedFileRoots(d_->options.apiFileRoots);
         if (!d_->apiServer->start(d_->config->httpPort(), -1,
                 d_->options.apiBindAddress.isEmpty() ? QStringLiteral("127.0.0.1") : d_->options.apiBindAddress)) {
@@ -543,6 +551,7 @@ WatchStore* Application::watch() const
 {
     return d_->watch.get();
 }
+ExplorerStore* Application::explorer() const { return d_->explorer.get(); }
 
 FavoritesStore* Application::favorites() const
 {

@@ -133,12 +133,15 @@ static void addCommonOptions(QCommandLineParser& parser, QCommandLineOption& por
     parser.addOption(shareDb);
 }
 
-static QString resolveDataDirectory(QCommandLineParser& parser, const QCommandLineOption& dataDirOption)
+static QString resolveDataDirectory(QCommandLineParser& parser, const QCommandLineOption& dataDirOption,
+                                    bool rememberOverride)
 {
     QString dataDir;
     if (parser.isSet(dataDirOption)) {
         dataDir = parser.value(dataDirOption);
-        saveDataDirectory(dataDir); // remember an explicit override for next launch
+        // Headless test/service overrides belong to this process. Preserve the
+        // existing GUI behavior of remembering an explicitly selected directory.
+        if (rememberOverride) saveDataDirectory(dataDir);
     } else {
         dataDir = getSavedDataDirectory();
         if (dataDir.isEmpty())
@@ -271,7 +274,6 @@ int main(int argc, char* argv[])
     QCommandLineOption apiBindOption(QStringList() << "api-bind", QStringLiteral("HTTP and WebSocket bind address"), "address");
     QCommandLineOption apiFileRootOption(QStringList() << "api-file-root",
         QStringLiteral("Authorize HTTP and WebSocket file operations inside this existing directory (repeatable)"), "path");
-    QCommandLineOption legacyWebuiOption(QStringList() << "legacy-webui-dir", QStringLiteral("Legacy Web UI directory"), "path");
     QCommandLineOption shareDbOption(QStringList() << "share-db",
         QStringLiteral("Serve the whole database to peers that ask: on|off "
                        "(overrides the databaseSharing config key for this run)"),
@@ -281,10 +283,9 @@ int main(int argc, char* argv[])
         webuiDirOption, shareDbOption);
     parser.addOption(apiBindOption);
     parser.addOption(apiFileRootOption);
-    parser.addOption(legacyWebuiOption);
     parser.process(*qapp);
 
-    const QString dataDir = resolveDataDirectory(parser, dataDirOption);
+    const QString dataDir = resolveDataDirectory(parser, dataDirOption, !consoleMode);
     if (!QDir().mkpath(dataDir)) {
         qCritical() << "Failed to create data directory:" << dataDir;
         return 1;
@@ -315,7 +316,6 @@ int main(int argc, char* argv[])
     options.webuiDir = parser.isSet(webuiDirOption) ? parser.value(webuiDirOption) : QString();
     options.apiBindAddress = parser.isSet(apiBindOption) ? parser.value(apiBindOption) : QString();
     options.apiFileRoots = parser.values(apiFileRootOption);
-    options.legacyWebuiDir = parser.isSet(legacyWebuiOption) ? parser.value(legacyWebuiOption) : QString();
     if (parser.isSet(shareDbOption)) {
         options.shareDatabase = parseBoolOption(parser.value(shareDbOption));
         if (!options.shareDatabase) {

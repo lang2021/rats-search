@@ -68,6 +68,10 @@ public:
         std::lock_guard<std::mutex> lock(queueMutex_);
         return static_cast<int>(metadataQueue_.size());
     }
+    bool isInvestigating(const QString& hash) const {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        return pendingHashes_.count(hash) != 0;
+    }
     // Application calls this only after IndexingService confirms a new row or
     // file-list backfill. BEP 9 success alone is counted by fetchSuccessCount.
     void recordIndexed() { ++discoveredCount_; }
@@ -84,6 +88,13 @@ public:
 
     enum class DiscoverySource { Sample, GetPeers, Announce };
     Q_ENUM(DiscoverySource)
+    struct PeerHint { QString ip; uint16_t port = 0; };
+    void setMetadataPeerProvider(std::function<std::vector<PeerHint>(const QString&)> provider) {
+        metadataPeerProvider_ = std::move(provider);
+    }
+    void setPeerObserver(std::function<void(const QString&, const QString&, uint16_t, bool)> observer) {
+        peerObserver_ = std::move(observer);
+    }
 
 signals:
     void hashQueued(const QString& hash, DiscoverySource source, bool hasPeer);
@@ -192,6 +203,8 @@ private:
     QHash<QString, RetryState> retryAfter_;
 
     KnownHashFilter knownHashFilter_;
+    std::function<std::vector<PeerHint>(const QString&)> metadataPeerProvider_;
+    std::function<void(const QString&, const QString&, uint16_t, bool)> peerObserver_;
 };
 
 } // namespace rats::net

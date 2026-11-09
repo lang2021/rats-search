@@ -66,6 +66,8 @@ public:
     int relayedPeerCount() const;
     int carriedCircuitCount() const;
     size_t dhtNodeCount() const;
+    // Internal-only endpoint snapshot for local GeoIP lookup; never return raw IPs through REST.
+    QJsonObject networkMapEndpoints() const;
     bool isDhtRunning() const;
     bool isMdnsRunning() const;
 

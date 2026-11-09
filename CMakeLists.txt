@@ -197,6 +197,16 @@ target_link_libraries(ratscore PUBLIC
     rats
 )
 
+# Optional local GeoIP lookup for the Web network map. The database itself is
+# supplied per data directory and is never included in the executable.
+find_path(MAXMINDDB_INCLUDE_DIR maxminddb.h)
+find_library(MAXMINDDB_LIBRARY maxminddb)
+if(MAXMINDDB_INCLUDE_DIR AND MAXMINDDB_LIBRARY)
+    target_include_directories(ratscore PRIVATE ${MAXMINDDB_INCLUDE_DIR})
+    target_link_libraries(ratscore PUBLIC ${MAXMINDDB_LIBRARY})
+    target_compile_definitions(ratscore PRIVATE RATS_GEOIP_MMDB=1)
+endif()
+
 # The GUI / executable layer — everything the app binary compiles beyond the
 # ratscore library: pre-Application bootstrap helpers (src/bootstrap) and the Qt
 # Widgets presentation layer (src/ui). Globbed with CONFIGURE_DEPENDS just like

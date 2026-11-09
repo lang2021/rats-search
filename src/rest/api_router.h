@@ -18,6 +18,7 @@ class Application;
 namespace rats::rest {
 
 struct RemoteSearchSession;
+struct ExplorerSession;
 
 // The unified method surface of the application. A single dotted-name method
 // table (e.g. "search.torrents", "download.add", "config.set") maps names to
@@ -59,6 +60,7 @@ private:
     app::Application* app_;
     QHash<QString, Handler> handlers_;
     QHash<QString, std::shared_ptr<RemoteSearchSession>> remoteSearches_;
+    std::shared_ptr<ExplorerSession> explorer_;
 };
 
 } // namespace rats::rest

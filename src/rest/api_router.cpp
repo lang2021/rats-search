@@ -1,6 +1,7 @@
 #include "rest/api_router.h"
 
 #include "app/application.h"
+#include "app/explorer_store.h"
 #include "app/config_store.h"
 #include "app/search_history_store.h"
 #include "app/watch_store.h"
@@ -12,6 +13,7 @@
 #include "net/crawler.h"
 #include "net/p2p_transport.h"
 #include "net/torrent_engine.h"
+#include "rest/geo_locator.h"
 #include "peer/peer_api.h"
 #include "services/database_sync_service.h"
 #include "services/download_service.h"
@@ -47,15 +49,18 @@
 #endif
 
 #include <QDateTime>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStringList>
 #include <QTimer>
 #include <QUuid>
 #include <memory>
+#include <mutex>
 
 namespace rats::rest {
 
@@ -245,6 +250,112 @@ struct RemoteSearchSession {
     QHash<QString, int> candidatePositions;
     int peers = 0;
 };
+
+// One process-local observation session. DHT/BT callbacks update bounded state
+// and use ExplorerStore's serialized local persistence; no router is captured.
+struct ExplorerSession {
+    std::mutex mutex;
+    QString id, hash, status = "running", stage = "discovering", error;
+    QString startedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    QString endedAt;
+    QByteArray salt = QUuid::createUuid().toByteArray();
+    QJsonObject metadata;
+    QJsonArray peers, contacts, samples;
+    QHash<QString, int> peerPositions, contactPositions;
+    QSet<QString> peerSeen, contactSeen, sampleSeen;
+    QSet<QString> sampledContacts;
+    bool peersTruncated = false, contactsTruncated = false, samplesTruncated = false;
+    bool persistenceFailed = false;
+    int sampleRequests = 0;
+    int reusedPeers = 0;
+    int reusedContacts = 0;
+    uint64_t taskId = 0;
+};
+
+namespace {
+constexpr int explorerListLimit = 50;
+constexpr int explorerHashLimit = 100;
+constexpr int explorerSeenLimit = 1000;
+constexpr int explorerFileLimit = 5 * 1024 * 1024;
+
+QString explorerNodeId(const ExplorerSession& s, const QString& key)
+{
+    return QString::fromLatin1(QCryptographicHash::hash(s.salt + key.toUtf8(),
+        QCryptographicHash::Sha256).toHex().left(12));
+}
+
+void explorerNode(const std::shared_ptr<ExplorerSession>& s, bool contact,
+                  const QString& key, const QString& state)
+{
+    std::lock_guard<std::mutex> lock(s->mutex);
+    if (s->status == "cancelled" || s->status == "failed" || key.isEmpty()) return;
+    auto& seen = contact ? s->contactSeen : s->peerSeen;
+    auto& positions = contact ? s->contactPositions : s->peerPositions;
+    auto& rows = contact ? s->contacts : s->peers;
+    auto& truncated = contact ? s->contactsTruncated : s->peersTruncated;
+    if (!seen.contains(key)) {
+        if (seen.size() >= explorerSeenLimit) { truncated = true; return; }
+        seen.insert(key);
+        if (rows.size() >= explorerListLimit) { truncated = true; return; }
+        positions.insert(key, rows.size());
+        rows.append(QJsonObject());
+    }
+    const auto pos = positions.value(key, -1);
+    if (pos < 0) return;
+    QJsonObject row = rows[pos].toObject();
+    row["id"] = explorerNodeId(*s, key);
+    row["state"] = state;
+    if (state == "handshake") row["handshakeConfirmed"] = true;
+    row["lastObserved"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    rows.replace(pos, row);
+}
+
+#ifdef RATS_SEARCH_FEATURES
+QJsonObject explorerMetadata(const librats::bittorrent::TorrentInfo& info)
+{
+    QJsonObject out;
+    out["hash"] = QString::fromStdString(info.info_hash_hex());
+    out["name"] = QString::fromStdString(info.name());
+    out["sizeBytes"] = static_cast<double>(info.total_size());
+    out["fileCount"] = static_cast<int>(info.num_files());
+    return out;
+}
+#endif
+
+QJsonObject explorerSnapshot(const std::shared_ptr<ExplorerSession>& s, app::ExplorerStore* store)
+{
+    std::lock_guard<std::mutex> lock(s->mutex);
+    const auto counts = store ? store->counts(s->hash) : std::nullopt;
+    const bool persistenceAvailable = counts.has_value() && !s->persistenceFailed;
+    return QJsonObject {
+        {"id", s->id}, {"hash", s->hash}, {"status", s->status}, {"stage", s->stage},
+        {"error", s->error}, {"startedAt", s->startedAt}, {"endedAt", s->endedAt},
+        {"metadata", s->metadata}, {"peers", s->peers}, {"contacts", s->contacts},
+        {"samples", s->samples}, {"peerCount", s->peerSeen.size()},
+        {"contactCount", s->contactSeen.size()}, {"sampleCount", s->sampleSeen.size()},
+        {"peersTruncated", s->peersTruncated}, {"contactsTruncated", s->contactsTruncated},
+        {"samplesTruncated", s->samplesTruncated}, {"sampleRequests", s->sampleRequests},
+        {"registeredCount", persistenceAvailable ? counts->peers : -1},
+        {"reusedCount", s->reusedPeers},
+        {"reusedContacts", s->reusedContacts},
+        {"verifiedCount", persistenceAvailable ? counts->verifiedPeers : -1},
+        {"registeredContacts", persistenceAvailable ? counts->contacts : -1},
+        {"registeredSamples", persistenceAvailable ? counts->samples : -1},
+        {"persistenceAvailable", persistenceAvailable}
+    };
+}
+
+void explorerFinish(const std::shared_ptr<ExplorerSession>& s, const QString& status,
+                    const QString& error = {})
+{
+    std::lock_guard<std::mutex> lock(s->mutex);
+    if (s->status != "running") return;
+    s->status = status;
+    if (status == "complete") s->stage = "complete";
+    s->error = error;
+    s->endedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+}
+} // namespace
 
 namespace {
 
@@ -517,6 +628,270 @@ void ApiRouter::call(const QString& method, const QJsonObject& params, const Res
 
 void ApiRouter::registerMethods()
 {
+#ifdef RATS_SEARCH_FEATURES
+    add("explore.start", [this](const QJsonObject& params, const ResultCallback& respond) {
+        if (explorer_) {
+            std::lock_guard<std::mutex> lock(explorer_->mutex);
+            if (explorer_->status == "running") {
+                respond(Result::failure("Another exploration is already running"));
+                return;
+            }
+        }
+
+        const QString kind = params["kind"].toString();
+        const QString input = params["target"].toString().trimmed();
+        librats::bittorrent::TorrentInfo parsed;
+        QString hash;
+        if (kind == "torrent") {
+            const QString encoded = params["dataBase64"].toString();
+            if (encoded.isEmpty() || encoded.size() > ((explorerFileLimit + 2) / 3 * 4 + 4)) {
+                respond(Result::failure("Torrent file is empty or exceeds 5 MiB"));
+                return;
+            }
+            const QByteArray bytes = QByteArray::fromBase64(encoded.toLatin1(), QByteArray::AbortOnBase64DecodingErrors);
+            if (bytes.isEmpty() || bytes.size() > explorerFileLimit) {
+                respond(Result::failure("Invalid or oversized torrent file"));
+                return;
+            }
+            librats::Bytes raw(reinterpret_cast<const uint8_t*>(bytes.constData()),
+                               reinterpret_cast<const uint8_t*>(bytes.constData()) + bytes.size());
+            librats::bittorrent::TorrentParseError error;
+            const auto info = librats::bittorrent::TorrentInfo::from_bytes(raw, &error);
+            if (!info || !info->has_metadata()) {
+                respond(Result::failure("Invalid torrent file: " + QString::fromStdString(error.message)));
+                return;
+            }
+            parsed = *info;
+            hash = QString::fromStdString(info->info_hash_hex());
+        } else if (kind == "hash" && infohash::isValid(input)) {
+            hash = infohash::normalize(input);
+        } else if (kind == "magnet" && input.size() <= 4096) {
+            auto info = librats::bittorrent::TorrentInfo::from_magnet(input.toStdString());
+            if (info) hash = QString::fromStdString(info->info_hash_hex());
+        }
+        if (!infohash::isValid(hash)) {
+            respond(Result::failure("Invalid magnet, InfoHash or torrent file"));
+            return;
+        }
+
+        auto* transport = app_->transport();
+        auto* bt = transport && transport->isBitTorrentEnabled() ? transport->bittorrent() : nullptr;
+        auto* dhtClient = bt ? bt->dht_client() : nullptr;
+        const bool networkAvailable = bt && bt->is_running() && dhtClient && dhtClient->is_running();
+        if (!networkAvailable && kind != "torrent") {
+            respond(Result::failure("DHT and metadata network are not running"));
+            return;
+        }
+        if (networkAvailable && ((app_->crawler() && app_->crawler()->isInvestigating(hash)) ||
+            bt->has_metadata_task(hash.toStdString()))) {
+            respond(Result::failure("This hash is being investigated by another task; retry later"));
+            return;
+        }
+        const auto hashBytes = librats::bittorrent::info_hash_from_hex(hash.toStdString());
+        if (!hashBytes || (networkAvailable && dhtClient->is_search_active(*hashBytes))) {
+            respond(Result::failure("A DHT lookup for this hash is already running; retry later"));
+            return;
+        }
+
+        auto session = std::make_shared<ExplorerSession>();
+        session->id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        session->hash = hash;
+        if (kind == "torrent") session->metadata = explorerMetadata(parsed);
+        explorer_ = session;
+        std::weak_ptr<ExplorerSession> weak = session;
+        if (!networkAvailable) {
+            explorerFinish(session, "complete", "DHT network is stopped; node discovery was skipped");
+            QTimer::singleShot(120000, this, [this, weak] {
+                if (auto s = weak.lock(); s && explorer_ == s) explorer_.reset();
+            });
+            respond(Result::success(QJsonObject{{"id", session->id}, {"hash", hash}}));
+            return;
+        }
+
+        auto sampleContact = [weak, dhtClient, target = *hashBytes, store = app_->explorer(), hash]
+            (const librats::Address& address, bool previouslyVerified) {
+            auto s = weak.lock();
+            if (!s) return;
+            const QString key = QString::fromStdString(address.to_string());
+            {
+                std::lock_guard<std::mutex> lock(s->mutex);
+                if (s->status != "running" || s->sampleRequests >= 2 ||
+                    s->sampledContacts.contains(key)) return;
+                s->sampledContacts.insert(key);
+                ++s->sampleRequests;
+                if (previouslyVerified) ++s->reusedContacts;
+            }
+            const bool started = dhtClient->sample_infohashes(address, target,
+                [weak, store, hash, key, address, previouslyVerified]
+                (const librats::SampleInfohashesResult& result) {
+                    auto s = weak.lock();
+                    if (!s || result.status != librats::SampleInfohashesStatus::Success) return;
+                    {
+                        std::lock_guard<std::mutex> lock(s->mutex);
+                        if (s->status == "cancelled" || s->status == "failed") return;
+                        if (store && !store->recordContact(hash,
+                            QString::fromStdString(address.ip.to_string()), address.port))
+                            s->persistenceFailed = true;
+                        for (const auto& sampleHash : result.samples) {
+                            const QString value = QString::fromStdString(librats::bittorrent::to_hex(sampleHash));
+                            if (s->sampleSeen.contains(value)) continue;
+                            if (s->sampleSeen.size() >= explorerHashLimit) { s->samplesTruncated = true; break; }
+                            s->sampleSeen.insert(value);
+                            s->samples.append(QJsonObject{{"hash", value}, {"source", "same-round DHT sample"}});
+                            if (store && !store->recordSample(hash, value)) s->persistenceFailed = true;
+                        }
+                    }
+                    if (previouslyVerified) explorerNode(s, true, key, "responded");
+                });
+            if (!started) {
+                std::lock_guard<std::mutex> lock(s->mutex);
+                --s->sampleRequests;
+                if (previouslyVerified) --s->reusedContacts;
+                s->sampledContacts.remove(key);
+            }
+        };
+        auto onResponder = [weak, sampleContact, store = app_->explorer(), hash]
+            (const librats::Address& address) {
+            auto s = weak.lock();
+            if (!s) return;
+            const QString key = QString::fromStdString(address.to_string());
+            {
+                std::lock_guard<std::mutex> lock(s->mutex);
+                if (s->status != "running" || s->contactSeen.contains(key)) return;
+                if (store && !store->recordContact(hash,
+                    QString::fromStdString(address.ip.to_string()), address.port))
+                    s->persistenceFailed = true;
+            }
+            explorerNode(s, true, key, "responded");
+            sampleContact(address, false);
+        };
+        auto onPeer = [weak, store = app_->explorer(), hash](const std::string& ip, uint16_t port, const char* state) {
+            if (auto s = weak.lock()) {
+                const bool handshake = state && std::string(state) == "handshake";
+                {
+                    std::lock_guard<std::mutex> lock(s->mutex);
+                    if (s->status != "running") return;
+                    if (store && !store->recordPeer(hash, QString::fromStdString(ip), port, handshake))
+                        s->persistenceFailed = true;
+                }
+                explorerNode(s, false, QString::fromStdString(ip) + ':' + QString::number(port),
+                             QString::fromLatin1(state));
+                if (QString::fromLatin1(state) != QLatin1String("candidate")) {
+                    std::lock_guard<std::mutex> lock(s->mutex);
+                    if (s->status == "running") s->stage = "metadata";
+                }
+            }
+        };
+
+        const auto cachedContacts = app_->explorer()->contacts(hash, 8);
+        for (const auto& hint : cachedContacts) {
+            const auto ip = hint.ip.toStdString();
+            // Contacts enter this table only after an actual KRPC response; retry
+            // sampling them directly without injecting them into the DHT routing table.
+            sampleContact(librats::Address(ip, hint.port), true);
+        }
+
+        if (kind == "torrent") {
+            auto stats = std::make_shared<librats::PeerLookupStats>();
+            stats->on_responder = onResponder;
+            const bool started = dhtClient->find_peers(*hashBytes,
+                [weak, stats, store = app_->explorer(), hash](const std::vector<librats::Address>& peers, const librats::InfoHash&) {
+                    if (auto s = weak.lock()) {
+                        for (const auto& peer : peers) {
+                            {
+                                std::lock_guard<std::mutex> lock(s->mutex);
+                                if (s->status != "running") return;
+                                if (store && !store->recordPeer(hash,
+                                    QString::fromStdString(peer.ip.to_string()), peer.port, false))
+                                    s->persistenceFailed = true;
+                            }
+                            explorerNode(s, false, QString::fromStdString(peer.to_string()), "candidate");
+                        }
+                        if (stats->completed.load()) explorerFinish(s, "complete");
+                    }
+                }, stats);
+            if (!started) {
+                explorer_.reset();
+                respond(Result::failure("DHT lookup could not start"));
+                return;
+            }
+        } else {
+            librats::Bittorrent::MetadataObservation observation;
+            observation.on_dht_responder = onResponder;
+            observation.on_peer = onPeer;
+            auto cachedPeers = app_->explorer()->peers(hash);
+            const auto task = bt->get_torrent_metadata(hash.toStdString(),
+                [weak](const librats::bittorrent::TorrentInfo& info, bool success, const std::string& error) {
+                    auto s = weak.lock();
+                    if (!s) return;
+                    if (success && info.has_metadata() &&
+                        QString::fromStdString(info.info_hash_hex()) == s->hash) {
+                        {
+                            std::lock_guard<std::mutex> lock(s->mutex);
+                            if (s->status != "running") return;
+                            s->metadata = explorerMetadata(info);
+                        }
+                        explorerFinish(s, "complete");
+                    } else {
+                        explorerFinish(s, "failed", QString::fromStdString(error.empty() ? "metadata invalid" : error));
+                    }
+                }, librats::Bittorrent::kMetadataTimeoutMs, librats::Bittorrent::MetadataOrigin::Other,
+                std::move(observation));
+            if (!task) {
+                explorer_.reset();
+                respond(Result::failure("Metadata task could not start"));
+                return;
+            }
+            session->taskId = task;
+            for (const auto& hint : cachedPeers) {
+                bt->add_metadata_peer(hash.toStdString(), task, hint.ip.toStdString(), hint.port);
+                ++session->reusedPeers;
+            }
+        }
+        const QString id = session->id;
+        QTimer::singleShot(librats::Bittorrent::kMetadataTimeoutMs + 1000, this, [this, weak, id] {
+            auto s = weak.lock();
+            if (!s || explorer_ != s || s->id != id) return;
+            bool stillRunning;
+            {
+                std::lock_guard<std::mutex> lock(s->mutex);
+                stillRunning = s->status == "running";
+            }
+            if (!stillRunning) return;
+            explorerFinish(s, "failed", "exploration timeout");
+            if (s->taskId) {
+                auto* transport = app_->transport();
+                if (auto* current = transport ? transport->bittorrent() : nullptr)
+                    current->cancel_metadata_task(s->taskId);
+            }
+        });
+        QTimer::singleShot(180000, this, [this, weak, id] {
+            if (auto s = weak.lock(); s && explorer_ == s && s->id == id) explorer_.reset();
+        });
+        respond(Result::success(QJsonObject{{"id", id}, {"hash", hash}}));
+    });
+    add("explore.snapshot", [this](const QJsonObject& params, const ResultCallback& respond) {
+        if (!explorer_ || params["id"].toString() != explorer_->id) {
+            respond(Result::failure("Exploration session not found or expired"));
+            return;
+        }
+        respond(Result::success(explorerSnapshot(explorer_, app_->explorer())));
+    });
+    add("explore.cancel", [this](const QJsonObject& params, const ResultCallback& respond) {
+        if (!explorer_ || params["id"].toString() != explorer_->id) {
+            respond(Result::failure("Exploration session not found or expired"));
+            return;
+        }
+        explorerFinish(explorer_, "cancelled", "cancelled by user");
+        const auto task = explorer_->taskId;
+        auto* transport = app_->transport();
+        if (task) {
+            if (auto* bt = transport ? transport->bittorrent() : nullptr)
+                bt->cancel_metadata_task(task);
+        }
+        respond(Result::success(explorerSnapshot(explorer_, app_->explorer())));
+    });
+#endif
     // -----------------------------------------------------------------------
     // Search
     // -----------------------------------------------------------------------
@@ -583,11 +958,11 @@ void ApiRouter::registerMethods()
 
     add("search.torrents", [this](const QJsonObject& params, const ResultCallback& respond) {
         const service::SearchService::Request req = buildSearchRequest(params);
-        // A torrent search through the API is a user-initiated search, so it is
-        // remembered exactly like one typed into the GUI (the store itself
-        // honours the searchHistory setting). search.files is deliberately not
-        // recorded: a client running both for one query would count it twice.
-        app_->searchHistory()->add(req.query);
+        // Preserve legacy callers' search-history behavior, while allowing the
+        // React UI to suppress records for filter/sort refreshes.
+        const bool recordHistory = !params.contains("recordHistory") || params["recordHistory"].toBool();
+        if (recordHistory)
+            app_->searchHistory()->add(req.query);
         const QVector<domain::SearchHit> hits = app_->search()->searchTorrents(req);
 
         QJsonArray results;
@@ -606,7 +981,7 @@ void ApiRouter::registerMethods()
 
     add("search.files", [this](const QJsonObject& params, const ResultCallback& respond) {
         const service::SearchService::Request req = buildSearchRequest(params);
-        if (req.query.length() <= 2) {
+        if (req.query.length() < 2) {
             respond(Result::failure("Query too short"));
             return;
         }
@@ -616,6 +991,35 @@ void ApiRouter::registerMethods()
         for (const domain::SearchHit& hit : hits)
             results.append(domain::codec::toJson(hit, { /*includeFiles*/ true }));
         respond(Result::success(results));
+    });
+
+    add("search.local", [this](const QJsonObject& params, const ResultCallback& respond) {
+        service::SearchService::Request req = buildSearchRequest(params);
+        req.offset = std::max(0, req.offset);
+        req.limit = std::clamp(req.limit, 1, 50);
+        const QString source = params["source"].toString(QStringLiteral("all"));
+        if (source != QLatin1String("all") && source != QLatin1String("filename")
+            && source != QLatin1String("content")) {
+            respond(Result::failure("Invalid matching source"));
+            return;
+        }
+        const auto page = app_->search()->searchLocalPage(req, source);
+        if (!page) {
+            respond(Result::failure("Local search or category counts unavailable"));
+            return;
+        }
+        const bool recordHistory = !params.contains("recordHistory") || params["recordHistory"].toBool();
+        if (recordHistory && !req.query.trimmed().isEmpty() && req.offset == 0)
+            app_->searchHistory()->add(req.query);
+        QJsonArray items;
+        for (const auto& hit : page->items)
+            items.append(domain::codec::toJson(hit));
+        QJsonObject counts;
+        for (auto it = page->counts.cbegin(); it != page->counts.cend(); ++it)
+            counts.insert(it.key(), QJsonValue(it.value()));
+        respond(Result::success(QJsonObject {
+            { "items", items }, { "counts", counts }, { "total", QJsonValue(page->total) }
+        }));
     });
 
     add("search.browse", [this](const QJsonObject& params, const ResultCallback& respond) {
@@ -655,7 +1059,7 @@ void ApiRouter::registerMethods()
     // -----------------------------------------------------------------------
     // Watch and search history
     // -----------------------------------------------------------------------
-    for (const QString method : {"watch.list", "watch.unread", "watch.add", "watch.enable", "watch.delete", "watch.read"}) {
+    for (const QString method : {"watch.list", "watch.unread", "watch.add", "watch.enable", "watch.delete", "watch.read", "watch.readAll"}) {
         add(method, [this, method](const QJsonObject& params, const ResultCallback& respond) {
             app_->watch()->request(method, params, respond);
         });
@@ -1188,6 +1592,19 @@ void ApiRouter::registerMethods()
         respond(Result::success(result));
     });
 
+    add("stats.contentTypes", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        bool ok = false;
+        const auto counts = app_->torrents()->contentTypeCounts(&ok);
+        if (!ok) {
+            respond(Result::failure(QStringLiteral("Content type counts unavailable")));
+            return;
+        }
+        QJsonObject result;
+        for (auto it = counts.cbegin(); it != counts.cend(); ++it)
+            result.insert(it.key(), static_cast<double>(it.value()));
+        respond(Result::success(result));
+    });
+
     // Process-local crawler counters. Metadata success is distinct from a
     // committed index row; discoveredCount also includes file-list backfills.
     add("stats.crawler", [this](const QJsonObject& /*params*/, const ResultCallback& respond) {
@@ -1226,6 +1643,53 @@ void ApiRouter::registerMethods()
             result["dhtRunning"] = t->isDhtRunning();
             result["running"] = t->isRunning();
         }
+        respond(Result::success(result));
+    });
+
+    // Map coordinates are looked up locally. Raw endpoints stay inside the process.
+    auto mapGeo = std::make_shared<GeoLocator>(
+        app_->options().dataDirectory + QStringLiteral("/geoip-city.mmdb"));
+    add("stats.networkMap", [this, mapGeo](const QJsonObject& /*params*/, const ResultCallback& respond) {
+        QJsonObject result {{"geoAvailable", mapGeo->available()},
+                            {"dhtLocated", 0}, {"peerLocated", 0}};
+        QJsonArray dht;
+        QJsonArray peers;
+        if (auto* transport = app_->transport()) {
+            const QJsonObject endpoints = transport->networkMapEndpoints();
+            result["activityEpoch"] = endpoints["activityEpoch"];
+            result["sampledAtMs"] = endpoints["sampledAtMs"];
+            result["broadcastSentMessages"] = endpoints["broadcastSentMessages"];
+            if (mapGeo->available()) {
+                const QJsonObject local = mapGeo->locate(endpoints["dhtOrigin"].toString());
+                const QJsonObject p2pLocal = mapGeo->locate(endpoints["p2pOrigin"].toString());
+                if (!local.isEmpty()) result["local"] = local;
+                if (!p2pLocal.isEmpty()) result["p2pLocal"] = p2pLocal;
+                QSet<QString> seen;
+                for (const QJsonValue& value : endpoints["dht"].toArray()) {
+                    const QString ip = value.toString();
+                    if (ip.isEmpty() || seen.contains(ip)) continue;
+                    seen.insert(ip);
+                    QJsonObject position = mapGeo->locate(ip);
+                    if (position.isEmpty()) continue;
+                    position["id"] = QStringLiteral("DHT 路由联系人");
+                    dht.append(position);
+                }
+                for (const QJsonValue& value : endpoints["peers"].toArray()) {
+                    const QJsonObject peer = value.toObject();
+                    QJsonObject position = mapGeo->locate(peer["ip"].toString());
+                    if (position.isEmpty()) continue;
+                    position["id"] = peer["id"].toString();
+                    position["transport"] = peer["transport"].toString();
+                    position["sentMessages"] = peer["sentMessages"].toDouble();
+                    position["receivedMessages"] = peer["receivedMessages"].toDouble();
+                    peers.append(position);
+                }
+            }
+        }
+        result["dht"] = dht;
+        result["peers"] = peers;
+        result["dhtLocated"] = dht.size();
+        result["peerLocated"] = peers.size();
         respond(Result::success(result));
     });
 

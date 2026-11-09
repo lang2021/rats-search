@@ -25,8 +25,9 @@ private slots:
     void cleanupTestCase();
     void testStaticFileServing();
     void testRootPathServesIndex();
-    void testAngularRouteServesApplicationShell();
-    void testLegacyRouteServesFallbackUi();
+    void testDefaultReactDirectory();
+    void testReactRouteServesApplicationShell();
+    void testLegacyRouteUnavailable();
     void testDirectoryTraversalViaHttp();
     void testContentTypeHtml();
     void testContentTypeCss();
@@ -38,7 +39,7 @@ private slots:
     void testUnknownExtension();
     void testMissingWebuiDir();
     void testSymlinkCannotEscapeWebui();
-    void testVendoredScriptRoute();
+    void testReactAssetRoute();
     void testChineseTranslations();
 
 private:
@@ -52,7 +53,7 @@ private:
 
 void TestWebUI::writeTestFile(const QString& relPath, const QByteArray& content)
 {
-    QString fullPath = tempDir.path() + QStringLiteral("/webui/") + relPath;
+    QString fullPath = tempDir.path() + QStringLiteral("/webui-react/dist/") + relPath;
     QDir().mkpath(QFileInfo(fullPath).absolutePath());
     QFile f(fullPath);
     QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(f.errorString()));
@@ -65,17 +66,14 @@ void TestWebUI::initTestCase()
     QVERIFY(tempDir.isValid());
 
     writeTestFile("index.html", "<html><body>Test</body></html>");
-    writeTestFile("css/style.css", "body { color: red; }");
-    writeTestFile("js/app.js", "console.log('hello');");
+    writeTestFile("assets/index.css", "body { color: red; }");
+    writeTestFile("assets/index.js", "console.log('hello');");
     writeTestFile("config.json", "{\"key\": \"value\"}");
-    writeTestFile("images/icon.png", "\x89PNG");
+    writeTestFile("assets/icon.png", "\x89PNG");
     writeTestFile("logo.svg", "<svg></svg>");
     writeTestFile("readme.txt", "hello world");
-    writeTestFile("vendor/vue.global.prod.js", "window.Vue = {};");
-
     server = std::make_unique<rats::rest::ApiServer>(nullptr);
-    server->setWebuiDir(tempDir.path() + "/webui");
-    server->setLegacyWebuiDir(tempDir.path() + "/webui");
+    server->setWebuiDir(tempDir.path() + "/webui-react/dist");
     QTcpServer probe;
     QVERIFY(probe.listen(QHostAddress::LocalHost, 0));
     const int freePort = probe.serverPort();
@@ -107,7 +105,7 @@ HttpResponse TestWebUI::httpGet(const QString& path)
 
 void TestWebUI::testStaticFileServing()
 {
-    HttpResponse resp = httpGet("/css/style.css");
+    HttpResponse resp = httpGet("/assets/index.css");
     QCOMPARE(resp.statusCode, 200);
     QCOMPARE(resp.body, QByteArray("body { color: red; }"));
 }
@@ -119,7 +117,18 @@ void TestWebUI::testRootPathServesIndex()
     QVERIFY(resp.body.contains("<html><body>Test</body></html>"));
 }
 
-void TestWebUI::testAngularRouteServesApplicationShell()
+void TestWebUI::testDefaultReactDirectory()
+{
+    const QString previousDirectory = QDir::currentPath();
+    QVERIFY(QDir::setCurrent(tempDir.path()));
+    rats::rest::ApiServer defaultServer(nullptr);
+    const QByteArray response = defaultServer.handleStaticFile("/");
+    QVERIFY(QDir::setCurrent(previousDirectory));
+    QVERIFY(response.startsWith("HTTP/1.1 200 OK"));
+    QVERIFY(response.contains("<html><body>Test</body></html>"));
+}
+
+void TestWebUI::testReactRouteServesApplicationShell()
 {
     HttpResponse resp = httpGet("/console/network");
     QCOMPARE(resp.statusCode, 200);
@@ -128,20 +137,20 @@ void TestWebUI::testAngularRouteServesApplicationShell()
     QCOMPARE(httpGet("/search/permalink/" + hash).statusCode, 200);
     QCOMPARE(httpGet("/search/" + hash).statusCode, 200);
     QCOMPARE(httpGet("/search/missing.js").statusCode, 404);
+    QCOMPARE(httpGet("/magnet-explorer").statusCode, 200);
 }
 
-void TestWebUI::testLegacyRouteServesFallbackUi()
+void TestWebUI::testLegacyRouteUnavailable()
 {
     HttpResponse resp = httpGet("/legacy");
-    QCOMPARE(resp.statusCode, 200);
-    QVERIFY(resp.body.contains("<html><body>Test</body></html>"));
+    QCOMPARE(resp.statusCode, 404);
 }
 
 void TestWebUI::testDirectoryTraversalViaHttp()
 {
     // Note: /../config.json normalizes to /config.json via QUrl before reaching
     // the server, so it's not a traversal — it's a valid file in the webui dir.
-    QStringList paths = { "/../../../etc/passwd", "/css/../../etc/passwd", "/js/../../../etc/shadow" };
+    QStringList paths = { "/../../../etc/passwd", "/assets/../../etc/passwd", "/assets/../../../etc/shadow" };
     for (const QString& path : paths) {
         HttpResponse resp = httpGet(path);
         QVERIFY2(resp.statusCode == 404 || resp.statusCode == 403,
@@ -158,13 +167,13 @@ void TestWebUI::testContentTypeHtml()
 
 void TestWebUI::testContentTypeCss()
 {
-    HttpResponse resp = httpGet("/css/style.css");
+    HttpResponse resp = httpGet("/assets/index.css");
     QCOMPARE(resp.statusCode, 200);
 }
 
 void TestWebUI::testContentTypeJs()
 {
-    HttpResponse resp = httpGet("/js/app.js");
+    HttpResponse resp = httpGet("/assets/index.js");
     QCOMPARE(resp.statusCode, 200);
 }
 
@@ -176,7 +185,7 @@ void TestWebUI::testContentTypeJson()
 
 void TestWebUI::testContentTypePng()
 {
-    HttpResponse resp = httpGet("/images/icon.png");
+    HttpResponse resp = httpGet("/assets/icon.png");
     QCOMPARE(resp.statusCode, 200);
 }
 
@@ -218,18 +227,18 @@ void TestWebUI::testSymlinkCannotEscapeWebui()
     QVERIFY(secret.open(QIODevice::WriteOnly));
     secret.write("private content");
     secret.close();
-    QVERIFY(QFile::link(outside, tempDir.path() + "/webui/linked.html"));
+    QVERIFY(QFile::link(outside, tempDir.path() + "/webui-react/dist/linked.html"));
 
     const HttpResponse resp = httpGet("/linked.html");
     QCOMPARE(resp.statusCode, 403);
     QVERIFY(!resp.body.contains("private content"));
 }
 
-void TestWebUI::testVendoredScriptRoute()
+void TestWebUI::testReactAssetRoute()
 {
-    const HttpResponse resp = httpGet("/vendor/vue.global.prod.js");
+    const HttpResponse resp = httpGet("/assets/index.js");
     QCOMPARE(resp.statusCode, 200);
-    QCOMPARE(resp.body, QByteArray("window.Vue = {};"));
+    QCOMPARE(resp.body, QByteArray("console.log('hello');"));
 }
 
 void TestWebUI::testChineseTranslations()

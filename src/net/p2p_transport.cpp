@@ -23,6 +23,7 @@
 #include "librats/subsystems/reconnection.h"
 #include "librats/subsystems/relay.h"
 #include "librats/util/json.h"
+#include "librats/util/network_utils.h"
 #ifdef RATS_SEARCH_FEATURES
 #include "librats/subsystems/bittorrent.h"
 #endif
@@ -34,10 +35,17 @@
 #pragma pop_macro("emit")
 
 #include <QDebug>
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QUuid>
 #include <QTimer>
 #include <atomic>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #ifdef __APPLE__
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -163,7 +171,69 @@ librats::Json qtToLibratsJson(const QJsonObject& obj)
 // All transport state lives here; the librats raw pointers are non-owning and
 // valid for the Node's lifetime (attached before start(), torn down on stop()).
 struct P2PTransport::Private {
+    struct PeerMessageCounts {
+        quint64 sent = 0;
+        quint64 received = 0;
+    };
+
+    struct MessageActivity {
+        const QString epoch = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QByteArray salt = QUuid::createUuid().toByteArray();
+        mutable std::mutex mutex;
+        std::unordered_map<std::string, PeerMessageCounts> peers;
+        quint64 broadcastsSent = 0;
+
+        void recordPeerMessage(const QString& peerId, bool sending)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            auto& counts = peers[peerId.toStdString()];
+            if (sending) ++counts.sent;
+            else ++counts.received;
+        }
+
+        void recordBroadcast()
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++broadcastsSent;
+        }
+
+        void forgetPeer(const QString& peerId)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            peers.erase(peerId.toStdString());
+        }
+
+        PeerMessageCounts peerCounts(const QString& peerId) const
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            const auto it = peers.find(peerId.toStdString());
+            return it == peers.end() ? PeerMessageCounts{} : it->second;
+        }
+
+        void retainConnectedPeers(const std::unordered_set<std::string>& connectedPeerIds)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            for (auto it = peers.begin(); it != peers.end();) {
+                if (connectedPeerIds.find(it->first) == connectedPeerIds.end()) it = peers.erase(it);
+                else ++it;
+            }
+        }
+
+        quint64 broadcastCount() const
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            return broadcastsSent;
+        }
+
+        QString anonymousPeerId(const QString& peerId) const
+        {
+            return QString::fromLatin1(QCryptographicHash::hash(
+                salt + peerId.toUtf8(), QCryptographicHash::Sha256).toHex().left(20));
+        }
+    };
+
     P2PTransport* q = nullptr;
+    std::shared_ptr<MessageActivity> messageActivity = std::make_shared<MessageActivity>();
 
     std::unique_ptr<librats::Node> node;
     librats::DhtDiscovery* dht = nullptr;
@@ -232,6 +302,7 @@ void P2PTransport::Private::setupCallbacks()
         QString peerId = QString::fromStdString(id.to_hex());
         QMetaObject::invokeMethod(q, [this, peerId, reason, sourceGeneration]() {
             if (generation.load() != sourceGeneration || !running) return;
+            messageActivity->forgetPeer(peerId);
             qInfo() << "Peer disconnected:" << peerId.left(8) << "reason:" << librats::to_string(reason);
             emit q->peerDisconnected(peerId);
             updatePeerCount();
@@ -326,6 +397,7 @@ void P2PTransport::Private::dispatchMessage(const QString& peerId, const QString
         q,
         [this, peerId, type, data, sourceGeneration]() {
             if (generation.load() != sourceGeneration || !running) return;
+            messageActivity->recordPeerMessage(peerId, /*sending=*/false);
             auto it = messageHandlers.find(type);
             if (it != messageHandlers.end() && it.value()) {
                 it.value()(peerId, data);
@@ -477,6 +549,20 @@ bool P2PTransport::start()
                 return false;
             }
 #endif
+            // A native test instance can bind DHT UDP to its LAN address when a
+            // local TUN route does not carry KRPC. Defaults stay untouched.
+            const QString dhtBind = qEnvironmentVariable("RATS_DHT_BIND_ADDRESS").trimmed();
+            if (!d_->independentDirect && !dhtBind.isEmpty()) {
+                dhtCfg.bind_address = dhtBind.toStdString();
+            }
+            const QString bootstrap = qEnvironmentVariable("RATS_DHT_BOOTSTRAP_NODES").trimmed();
+            if (!bootstrap.isEmpty()) {
+                for (const QString& seed : bootstrap.split(',', Qt::SkipEmptyParts)) {
+                    const auto endpoint = librats::HostEndpoint::parse(seed.trimmed().toStdString());
+                    if (endpoint) dhtCfg.bootstrap_nodes.push_back(*endpoint);
+                    else qWarning() << "Ignoring invalid DHT bootstrap endpoint:" << seed;
+                }
+            }
 #ifdef __APPLE__
             if (d_->independentDirect) {
                 // Resolve on the chosen physical interface before starting DHT.
@@ -775,6 +861,64 @@ size_t P2PTransport::dhtNodeCount() const
     return client ? client->get_routing_table_size() : 0;
 }
 
+QJsonObject P2PTransport::networkMapEndpoints() const
+{
+    QJsonObject snapshot;
+    QJsonArray dht;
+    QJsonArray peers;
+    snapshot["activityEpoch"] = d_->messageActivity->epoch;
+    snapshot["sampledAtMs"] = QDateTime::currentMSecsSinceEpoch();
+    snapshot["broadcastSentMessages"] = static_cast<double>(d_->messageActivity->broadcastCount());
+    if (d_->dht && d_->dht->is_running()) {
+        if (auto* client = d_->dht->dht_client()) {
+            const std::string origin = client->get_external_address();
+            if (librats::network_utils::is_public_ip(origin))
+                snapshot["dhtOrigin"] = QString::fromStdString(origin);
+            for (const auto& endpoint : client->sample_candidates()) {
+                if (dht.size() >= 200) break;
+                if (!librats::network_utils::is_public_ip(endpoint.ip)) continue;
+                dht.append(QString::fromStdString(endpoint.ip.to_string()));
+            }
+        }
+    }
+    if (d_->node && isRunning()) {
+        std::unordered_set<std::string> connectedPeerIds;
+        const auto connectedPeers = d_->node->peers();
+        connectedPeerIds.reserve(connectedPeers.size());
+        for (const auto& peer : connectedPeers) connectedPeerIds.insert(peer.id.to_hex());
+
+        QString observed;
+        bool ambiguous = false;
+        for (const auto& address : d_->node->observed_addresses()) {
+            if (!librats::network_utils::is_public_ip(address.ip)) continue;
+            const QString ip = QString::fromStdString(address.ip.to_string());
+            if (!observed.isEmpty() && observed != ip) ambiguous = true;
+            observed = ip;
+        }
+        if (!ambiguous && !observed.isEmpty()) snapshot["p2pOrigin"] = observed;
+        for (const auto& peer : connectedPeers) {
+            if (peers.size() >= 24) break;
+            if (!peer.endpoint || !librats::network_utils::is_public_ip(peer.endpoint->ip)) continue;
+            QJsonObject item;
+            item["ip"] = QString::fromStdString(peer.endpoint->ip.to_string());
+            const QString peerId = QString::fromStdString(peer.id.to_hex());
+            item["id"] = d_->messageActivity->anonymousPeerId(peerId);
+            item["transport"] = peer.transport == librats::TransportKind::Tcp ? "TCP"
+                : peer.transport == librats::TransportKind::Udp ? "UDP" : "RELAY";
+            const auto counts = d_->messageActivity->peerCounts(peerId);
+            item["sentMessages"] = static_cast<double>(counts.sent);
+            item["receivedMessages"] = static_cast<double>(counts.received);
+            peers.append(item);
+        }
+        // Keep counters only for live peers so a long-running process does not
+        // retain an entry for every peer it has ever seen.
+        d_->messageActivity->retainConnectedPeers(connectedPeerIds);
+    }
+    snapshot["dht"] = dht;
+    snapshot["peers"] = peers;
+    return snapshot;
+}
+
 bool P2PTransport::isDhtRunning() const
 {
     return d_->dht && d_->dht->is_running();
@@ -803,7 +947,11 @@ bool P2PTransport::sendMessage(const QString& peerId, const QString& type, const
     }
 
     librats::Json jsonData = qtToLibratsJson(data);
-    d_->messages->send(*id, type.toStdString(), jsonData);
+    const auto activity = d_->messageActivity;
+    d_->messages->send(*id, type.toStdString(), jsonData,
+        [activity, peerId](bool ok, const std::string&) {
+            if (ok) activity->recordPeerMessage(peerId, /*sending=*/true);
+        });
     return true;
 }
 
@@ -815,7 +963,11 @@ int P2PTransport::broadcastMessage(const QString& type, const QJsonObject& data)
     }
 
     librats::Json jsonData = qtToLibratsJson(data);
-    d_->messages->send(type.toStdString(), jsonData);
+    const auto activity = d_->messageActivity;
+    d_->messages->send(type.toStdString(), jsonData,
+        [activity](bool ok, const std::string&) {
+            if (ok) activity->recordBroadcast();
+        });
     return peerCount(); // Approximate count
 }
 

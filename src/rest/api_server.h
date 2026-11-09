@@ -61,7 +61,6 @@ public:
 
     // Set webui directory for static file serving
     void setWebuiDir(const QString& dir);
-    void setLegacyWebuiDir(const QString& dir);
 
     // Set application pointer for metrics (P2P, DB, crawler, downloads)
     void setApplication(rats::app::Application* app);
@@ -107,7 +106,6 @@ private:
     int wsPort_ = 0;
     bool running_ = false;
     QString webuiDir_;
-    QString legacyWebuiDir_;
     QStringList configuredFileRoots_;
     QStringList authorizedFileRoots_;
     QByteArray authenticationToken_;

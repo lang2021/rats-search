@@ -199,15 +199,13 @@ bool ApiServer::initializeSecurity()
 
     const QString dataRoot = QFileInfo(app_->options().dataDirectory).canonicalFilePath();
     if (dataRoot.isEmpty()) return false;
-    const QString fallbackUi = QDir::currentPath() + QStringLiteral("/webui");
-    for (const QString& staticRoot : {webuiDir_.isEmpty() ? fallbackUi : webuiDir_,
-             legacyWebuiDir_.isEmpty() ? fallbackUi : legacyWebuiDir_}) {
-        const QString canonical = QFileInfo(staticRoot).canonicalFilePath();
-        if (!canonical.isEmpty() && (dataRoot == canonical ||
-                dataRoot.startsWith(canonical + QDir::separator()))) {
-            qWarning() << "Web UI directory cannot contain the API data directory";
-            return false;
-        }
+    const QString staticRoot = webuiDir_.isEmpty()
+        ? QDir::currentPath() + QStringLiteral("/webui-react/dist") : webuiDir_;
+    const QString canonical = QFileInfo(staticRoot).canonicalFilePath();
+    if (!canonical.isEmpty() && (dataRoot == canonical ||
+            dataRoot.startsWith(canonical + QDir::separator()))) {
+        qWarning() << "Web UI directory cannot contain the API data directory";
+        return false;
     }
 
     const QString path = QDir(app_->options().dataDirectory).filePath(QStringLiteral("api-token"));
@@ -511,9 +509,28 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
 
     HttpRequest req = parseHttpHeader(buffer.left(headerEnd));
 
+    // Check explorer upload authorization before buffering a potentially large body.
+    if (req.path == "/api/explore.start" && req.method != "OPTIONS" &&
+        !isAuthorized(req.headers.value(QStringLiteral("authorization")).toUtf8())) {
+        httpBuffers_.remove(socket);
+        requestsByStatus_[401]++;
+        socket->write(buildHttpResponse(401, "Unauthorized", "{\"error\":\"Authentication required\"}"));
+        socket->disconnectFromHost();
+        return;
+    }
+
     // For requests with a body, wait until Content-Length bytes are buffered.
     const int bodyStart = headerEnd + 4;
     const int contentLength = req.headers.value(QStringLiteral("content-length")).toInt();
+    // A .torrent is capped at 5 MiB before base64; reject oversized explorer
+    // uploads before waiting for or parsing their entire JSON body.
+    if (req.path == "/api/explore.start" &&
+        (contentLength > 7 * 1024 * 1024 || buffer.size() - bodyStart > 7 * 1024 * 1024)) {
+        httpBuffers_.remove(socket);
+        socket->write(buildHttpResponse(413, "Payload Too Large", "{\"error\":\"Torrent file exceeds upload limit\"}"));
+        socket->disconnectFromHost();
+        return;
+    }
     if (contentLength > 0) {
         if (buffer.size() - bodyStart < contentLength) {
             return; // more body bytes still incoming
@@ -575,13 +592,7 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
         return;
     }
 
-    if (req.path == "/legacy" || req.path.startsWith("/legacy/")) {
-        socket->write(handleStaticFile(req.path));
-        socket->disconnectFromHost();
-        return;
-    }
-
-    // Angular path routing: serve the application shell only for known UI
+    // React path routing: serve the application shell only for known UI
     // routes. API, health, metrics, downloads and missing assets retain their
     // normal response behavior.
     const QString routePath = req.path;
@@ -590,7 +601,7 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
         : routePath.startsWith("/search/") ? routePath.mid(QStringLiteral("/search/").size()) : QString();
     const bool legacyDetailRoute = infohash::isValid(legacyHash);
     const bool appRoute = routePath == "/search" || legacyDetailRoute || routePath == "/discover" || routePath == "/history" ||
-        routePath == "/watch" ||
+        routePath == "/watch" || routePath == "/magnet-explorer" ||
         routePath == "/console" || routePath.startsWith("/console/") || routePath.startsWith("/torrent/");
     if (appRoute) {
         socket->write(handleStaticFile("/index.html"));
@@ -598,11 +609,9 @@ void ApiServer::onHttpReadyRead(QTcpSocket* socket)
         return;
     }
 
-    // Static file serving for webui
-    if (req.path == "/" || req.path.startsWith("/css/") || req.path.startsWith("/js/") ||
-        req.path.startsWith("/images/") || req.path.startsWith("/vendor/") ||
-        req.path.endsWith(".html") || req.path.endsWith(".css") ||
-        req.path.endsWith(".js") || req.path.endsWith(".json") || req.path.endsWith(".svg") ||
+    // Static files from the React build.
+    if (req.path == "/" || req.path.endsWith(".html") || req.path.endsWith(".css") ||
+        req.path.endsWith(".js") || req.path.endsWith(".json") || req.path.endsWith(".geojson") || req.path.endsWith(".svg") ||
         req.path.endsWith(".ico") || req.path.endsWith(".png") || req.path.endsWith(".jpg") ||
         req.path.endsWith(".woff") || req.path.endsWith(".woff2")) {
         socket->write(handleStaticFile(req.path));
@@ -787,11 +796,6 @@ void ApiServer::onWsMessage(QWebSocket* socket, const QString& message)
 void ApiServer::setWebuiDir(const QString& dir)
 {
     webuiDir_ = dir;
-}
-
-void ApiServer::setLegacyWebuiDir(const QString& dir)
-{
-    legacyWebuiDir_ = dir;
 }
 
 void ApiServer::setApplication(app::Application* app)
@@ -1127,17 +1131,10 @@ QByteArray ApiServer::handleMetrics() const
 
 QByteArray ApiServer::handleStaticFile(const QString& path) const
 {
-    QString requestPath = path;
-    const bool legacy = path == "/legacy" || path.startsWith("/legacy/") || path.startsWith("/css/") ||
-        path.startsWith("/js/") || path.startsWith("/vendor/");
-    QString dir = legacy ? legacyWebuiDir_ : webuiDir_;
-    if (legacy) {
-        requestPath = path == "/legacy" ? QStringLiteral("/") :
-            path.startsWith("/legacy/") ? path.mid(QStringLiteral("/legacy").size()) : path;
-    }
-    if (dir.isEmpty()) {
-        dir = legacy ? QDir::currentPath() + "/webui" : QDir::currentPath() + "/webui";
-    }
+    const QString requestPath = path;
+    QString dir = webuiDir_;
+    if (dir.isEmpty())
+        dir = QDir::currentPath() + "/webui-react/dist";
     dir = QDir(dir).absolutePath();
 
     QString filePath;
@@ -1180,7 +1177,7 @@ QByteArray ApiServer::handleStaticFile(const QString& path) const
         contentType = "text/css";
     else if (filePath.endsWith(".js"))
         contentType = "application/javascript";
-    else if (filePath.endsWith(".json"))
+    else if (filePath.endsWith(".json") || filePath.endsWith(".geojson"))
         contentType = "application/json";
     else if (filePath.endsWith(".png"))
         contentType = "image/png";
