@@ -118,8 +118,8 @@ RUN chmod +x /app/docker-entrypoint.sh
 # Persistent data directory for database, config, and logs
 VOLUME /data
 
-# Default HTTP API port
-EXPOSE 8095
+# HTTP API and authenticated WebSocket ports.
+EXPOSE 8095/tcp 8096/tcp
 
 # Health check for Kubernetes
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
