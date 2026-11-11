@@ -37,7 +37,7 @@
 需要 C++17 编译器、CMake、Ninja、Qt 6（Core、Gui、Widgets、Network、Sql、WebSockets 等模块）以及 CMake 检查到的依赖。克隆时初始化子模块：
 
 ```sh
-git clone --branch feat/webui-nas --recurse-submodules https://github.com/lang2021/rats-search.git
+git clone --recurse-submodules https://github.com/lang2021/rats-search.git
 cd rats-search
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
