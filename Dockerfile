@@ -88,6 +88,7 @@ RUN if [ -n "$UBUNTU_APT_MIRROR" ]; then \
     libxkbcommon0 \
     ca-certificates \
     curl \
+    jq \
     util-linux \
     && rm -rf /var/lib/apt/lists/*
 
@@ -113,7 +114,8 @@ RUN chmod +x /app/RatsSearch /app/searchd /app/indexer /app/indextool
 
 # Copy and set up entrypoint (runs as root to fix /data permissions)
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+COPY docker/rats-import /app/rats-import
+RUN chmod +x /app/docker-entrypoint.sh /app/rats-import
 
 # Persistent data directory for database, config, and logs
 VOLUME /data
@@ -129,4 +131,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # CMD runs inside entrypoint (switched to rats user there)
-CMD ["/app/RatsSearch", "--console", "--max-peers", "30", "--data-dir", "/data", "--webui-dir", "/app/webui", "--api-bind", "0.0.0.0"]
+CMD ["/app/RatsSearch", "--console", "--max-peers", "30", "--data-dir", "/data", "--webui-dir", "/app/webui", "--api-bind", "0.0.0.0", "--api-file-root", "/data/imports"]

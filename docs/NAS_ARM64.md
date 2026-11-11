@@ -36,6 +36,15 @@ docker compose -f docker-compose.nas.yml ps
 
 `./rats-data` 是持久目录，包含 `rats.json`、API 令牌、Manticore 索引、DHT 联系人、Watch/探查数据库以及应用日志。**仅空目录**在首次启动时写入 NAS 配置：开启网络和 Crawler，保持 `independentDirect=false`，禁用 BT 文件下载与上传。已有数据目录和配置不会被入口脚本覆盖。请从 NAS 上的 `rats-data/api-token` 读取令牌，在 `http://NAS地址:8095` 的页面输入；不要把令牌贴入公开日志。
 
+新版镜像会在 `/data` 中建立 `imports` 目录。把一个 `.ratsdb` 文件放入该目录后，在**容器内部终端**执行：
+
+```sh
+cd /app
+./rats-import "/data/imports/文件名.ratsdb"
+```
+
+文件名必须明确指定；包含空格时保留引号。命令从本容器读取 API 令牌，调用现有导入接口并显示进度、插入、合并及拒绝数量。默认使用本机内容过滤、断点续传和重复 Hash 合并；原文件不会自动删除。Watch 仍只对成功新入库且命中已启用规则的资源产生提醒。导入目录是唯一授权给 API 的文件操作目录，不要将 API 令牌或其他配置文件放入其中。旧镜像没有这个命令和目录授权，不能仅把脚本复制进去代替镜像更新。
+
 世界地图需要将交付包中的 `geoip-city.mmdb` 放在 `rats-data/geoip-city.mmdb`，并重启容器以加载它。该文件来自 DB-IP City Lite；页面已注明数据来源。不要把文件放在镜像内的 `/app`，因为地图接口只从 `/data` 读取。若 `rats-data/geoip-city.mmdb` 已存在，先核对现有文件，不要直接覆盖。
 
 如果使用 NAS 图形界面手动映射端口，HTTP 和 WebSocket 必须成对映射。比如页面使用宿主端口 **40913 → 容器 8095/TCP**，还须增加 **40914 → 容器 8096/TCP**；React 生产页面按当前页面端口加 1 连接 WebSocket。缺少第二条映射时，总览实时事件与 Trawl 无法接收推送。使用下方 Compose 文件则默认映射宿主 8095/8096。修改端口映射通常需要重建容器，但保留原 `rats-data` 挂载目录。

@@ -1,0 +1,94 @@
+#!/bin/sh
+set -eu
+
+api_url=http://127.0.0.1:8095/api
+started=0
+
+fail() {
+    printf '导入失败：%s\n' "$*" >&2
+    exit 1
+}
+
+if [ "$#" -ne 1 ]; then
+    fail '用法：./rats-import "/data/imports/文件名.ratsdb"'
+fi
+
+input=$1
+case "$input" in
+    /data/imports/*.ratsdb) ;;
+    *) fail '请指定 /data/imports/ 下的 .ratsdb 文件绝对路径' ;;
+esac
+[ -f "$input" ] && [ ! -L "$input" ] || fail "文件不存在或不是普通文件：$input"
+root=$(readlink -f /data/imports) || fail '无法读取导入目录'
+path=$(readlink -f -- "$input") || fail '无法读取文件路径'
+[ "$root" = /data/imports ] || fail '导入目录不允许是符号链接'
+case "$path" in
+    "$root"/*) ;;
+    *) fail '文件路径超出 /data/imports' ;;
+esac
+if [ "$(id -u)" -eq 0 ]; then
+    setpriv --reuid=rats --regid=rats --init-groups -- test -r "$path" || fail "RatsSearch 无法读取文件：$path"
+else
+    [ -r "$path" ] || fail "无法读取文件：$path"
+fi
+[ -r /data/api-token ] || fail '无法读取 /data/api-token；请确认应用已启动'
+token=$(tr -d '\r\n' < /data/api-token)
+[ "${#token}" -eq 64 ] || fail 'API 令牌无效'
+
+request() {
+    response=$(curl --silent --show-error --fail-with-body --connect-timeout 3 --max-time 20 \
+        -H "Authorization: Bearer $token" "$@") || {
+        printf '%s\n' "$response" | jq -r '.error // empty' >&2 2>/dev/null || true
+        fail 'API 请求失败；请检查 RatsSearch 是否运行及文件访问授权'
+    }
+    printf '%s\n' "$response" | jq -e '.success == true' >/dev/null || {
+        detail=$(printf '%s\n' "$response" | jq -r '.error // "API 返回错误"' 2>/dev/null) || detail='API 响应无效'
+        fail "$detail"
+    }
+    printf '%s\n' "$response"
+}
+
+status=$(request "$api_url/database.status")
+[ "$(printf '%s\n' "$status" | jq -r '.data.running')" = false ] || fail '另一个数据库操作正在运行，请稍后重试'
+
+on_interrupt() {
+    trap - INT TERM
+    if [ "$started" -eq 1 ]; then
+        current=$(request "$api_url/database.status" 2>/dev/null) || current='{}'
+        current_path=$(printf '%s\n' "$current" | jq -r '.data.path // empty' 2>/dev/null) || current_path=''
+        running=$(printf '%s\n' "$current" | jq -r '.data.running // false' 2>/dev/null) || running=false
+        if [ "$current_path" = "$path" ] && [ "$running" = true ]; then
+            request "$api_url/database.cancel" >/dev/null 2>&1 || true
+            printf '\n已请求取消导入；原文件和断点记录保留。\n' >&2
+        fi
+    fi
+    exit 130
+}
+trap on_interrupt INT TERM
+
+payload=$(jq -nc --arg path "$path" '{path:$path,applyFilters:true,resume:true,removeWhenDone:false}')
+request --request POST --header 'Content-Type: application/json' --data "$payload" \
+    "$api_url/database.import" >/dev/null
+started=1
+printf '开始导入：%s\n' "$path"
+
+while :; do
+    status=$(request "$api_url/database.status")
+    current_path=$(printf '%s\n' "$status" | jq -r '.data.path // empty')
+    [ "$current_path" = "$path" ] || fail '导入状态已被其他操作覆盖，无法确认结果'
+    summary=$(printf '%s\n' "$status" | jq -r '.data | "已处理 \(.processed // 0)，插入 \(.inserted // 0)，合并 \(.merged // 0)，拒绝 \(.rejected // 0)"')
+    if [ "$summary" != "${last_summary-}" ]; then
+        printf '%s\n' "$summary"
+        last_summary=$summary
+    fi
+    stage=$(printf '%s\n' "$status" | jq -r '.data.stage // empty')
+    case "$stage" in
+        done)
+            printf '导入完成。原文件仍在：%s\n' "$path"
+            exit 0 ;;
+        failed)
+            detail=$(printf '%s\n' "$status" | jq -r '.data.error // "未知错误"')
+            fail "$detail" ;;
+    esac
+    sleep 2
+done

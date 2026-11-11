@@ -28,6 +28,34 @@ if [ -d /data ]; then
         cp /app/nas-first-run.json /data/rats.json || exit 1
         chown rats:rats /data/rats.json || exit 1
     fi
+    # Create the narrowly authorized import directory only after the empty-volume
+    # check, so a fresh volume still receives its initial configuration.
+    if [ -L /data/imports ]; then
+        echo "/data/imports must not be a symbolic link" >&2
+        exit 1
+    fi
+    if [ ! -e /data/imports ]; then
+        install -d -o rats -g rats -m 0750 /data/imports || exit 1
+    elif [ ! -d /data/imports ]; then
+        echo "/data/imports is not a directory" >&2
+        exit 1
+    fi
+
+    # Older NAS setups may have made the API token world-readable. The API
+    # deliberately refuses such a token, so narrow its permissions before
+    # dropping privileges. Never follow a token symlink or replace its value.
+    if [ -L /data/api-token ]; then
+        echo "/data/api-token must not be a symbolic link" >&2
+        exit 1
+    fi
+    if [ -e /data/api-token ]; then
+        if [ ! -f /data/api-token ]; then
+            echo "/data/api-token must be a regular file" >&2
+            exit 1
+        fi
+        chown rats:rats /data/api-token || { echo "Cannot assign API token to rats" >&2; exit 1; }
+        chmod 600 /data/api-token || { echo "Cannot secure API token permissions" >&2; exit 1; }
+    fi
 fi
 
 # Replace this shell with RatsSearch so Docker's TERM reaches the application.
